@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.3.3
+// @version      1.3.4
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
@@ -33,7 +33,7 @@
 
   // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
   // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.3';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.4';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';
@@ -75,6 +75,9 @@
     // 同一来源连续失败几次就本场停用它。3 次是「偶发」与「整体不可用」的分界：
     // 百度反爬通常第一题就挂，正常网络抖动很少连挂三题。
     sourceFailLimit: 3,
+    // 对账写回题库的最低把握度：低于它的答案算「猜」，猜中与否无从判断，
+    // 固化成知识只会污染题库（题库命中优先于联网，错答案会被永久沿用）。
+    reconcileMinConf: 0.8,
 
     // ---------- 会话答案缓存 ----------
     // 同一份卷里重复的题、停止后重开、重考同一份卷，都不该重新联网。
@@ -662,45 +665,77 @@
 
   // ==================== 作答 ====================
   // 把答案（选项文本或字母）映射到当前题目的选项
+  /**
+   * 把题库条目映射到当前页面的选项。返回要勾选的 option 数组，或 null（放弃，交回联网）。
+   *
+   * 核心原则：**题库记了文本就只认文本，数量必须对齐**。
+   *
+   * 为什么不拿字母兜底（这是本次改掉的旧行为）：
+   * 字母只在「选项顺序与当初一致」时才有意义，而平台恰恰常在两次作答之间打乱顺序。
+   * 一旦顺序变了，按字母选就是选到别的选项上去，而且会一路错到底——
+   * 多选只命中一部分时旧实现会返回那 1 项，交卷通过后还被标成「已验证」写回题库，
+   * 把好的 3 项覆盖成 1 项。宁可不答也不赌，这是本脚本一贯的取舍。
+   *
+   * 字母兜底只保留一种情况：题库条目本身没有文本（早年导入的纯字母数据），
+   * 那时字母是唯一可用信息。
+   */
   function resolveAnswer(q, entry) {
     if (!entry) return null;
-    const picked = [];
     const texts = (entry.a || []).map((s) => normStem(s));
     const letters = (entry.l || []).map((s) => String(s).toUpperCase());
-    // 优先按文本匹配
-    q.options.forEach((o) => {
-      const on = normStem(o.text);
-      if (!on) return;
-      if (texts.some((t) => t && (t === on || (t.length > 2 && on.length > 2 && similarity(t, on) > 0.9)))) {
-        picked.push(o);
-      }
-    });
-    // 文本匹配不到则按字母
-    if (!picked.length && letters.length) {
+    const want = texts.length || letters.length;
+    if (!want) return null;
+
+    if (texts.length) {
+      // ① 有文本：只按文本匹配，数量必须凑齐
+      const byText = [];
       q.options.forEach((o) => {
-        if (letters.includes(o.letter)) picked.push(o);
+        const on = normStem(o.text);
+        if (!on) return;
+        if (texts.some((t) => t && (t === on || (t.length > 2 && on.length > 2 && similarity(t, on) > 0.9)))) {
+          byText.push(o);
+        }
       });
+      if (q.type === 'multi') {
+        if (byText.length === texts.length) return byText;
+        if (byText.length) {
+          log(`多选题库有 ${texts.length} 项、页面只对上 ${byText.length} 项（选项可能改过），`
+            + '不猜，转联网', 'warn');
+        }
+        return null;
+      }
+      // 单选/判断：必须恰好对上 1 项。对上多项说明选项里有两个几乎一样的文本，
+      // 挑第一个等于掷硬币。
+      if (byText.length === 1) return byText;
+      if (byText.length > 1) {
+        log(`单选题有 ${byText.length} 个选项都像答案，不猜，转联网`, 'warn');
+      }
+      return null;
     }
-    if (!picked.length) return null;
-    if (q.type !== 'multi' && picked.length > 1) return [picked[0]];
-    return picked;
+
+    // ② 只有字母（无文本的历史数据）：按字母走，这是唯一可用信息
+    const byLetter = q.options.filter((o) => letters.includes(o.letter));
+    if (!byLetter.length) return null;
+    if (q.type === 'multi') return byLetter.length === letters.length ? byLetter : null;
+    return byLetter.length === 1 ? byLetter : null;
   }
 
-  function clickOption(opt) {
-    const inp = opt.input;
-    if (!inp) return false;
-    if (inp.checked) return true;
-    try {
-      inp.click();
-      if (inp.checked) return true;
-      // 兜底：直接置位并触发事件（某些页面只绑 onclick）
-      inp.checked = true;
-      inp.dispatchEvent(new Event('change', { bubbles: true }));
-      inp.dispatchEvent(new Event('click', { bubbles: true }));
-      return inp.checked;
-    } catch (e) {
-      return false;
+  /**
+   * 点某个选项：先点 input，选中态没变再点 label 兜底。
+   * 平台的绑定有时挂在 label 上（点 input 不触发），所以需要这一层。
+   */
+  function clickOption(o) {
+    if (!o || !o.input) return false;
+    // 已经是选中态就别再点：checkbox 再点一次会取消勾选，
+    // 「把答案从 ABCD 收窄成 AB」时 A、B 会被自己的补点取消掉。
+    if (o.input.checked) return true;
+    o.input.click();
+    if (o.input.checked) return true;
+    if (o.label) {
+      o.label.click();
+      if (o.input.checked) return true;
     }
+    return false;
   }
 
   function applyAnswer(q, picked) {
@@ -1864,7 +1899,8 @@
           log(`第 ${q.qid} 题作答（${srcLabel}）：${r.want.join(',')}${conf}`);
           recordHistory({
             no, qid: q.qid, stem: q.stem, type: q.type,
-            picked: decided.texts, letters: r.want, ok: true, source: decided.source, at: Date.now(),
+            picked: decided.texts, letters: r.want, ok: true,
+            source: decided.source, conf: decided.conf, at: Date.now(),
           });
         } else {
           unknown++;
@@ -2004,6 +2040,20 @@
   }
 
   // 交卷后平台只给"通过/未通过"，不给逐题判定；因此只在通过时把本场全部答案记为已验证。
+  /**
+   * 交卷通过后把本场答案写回题库。
+   *
+   * 「通过」只说明总分过了线，**不代表每道题都对**：及格线 60% 的卷子可以错四成。
+   * 旧实现把每条提交的答案都标成「已验证」写回，等于把猜错的答案永久固化 ——
+   * 而题库命中是 conf 1、优先于联网，一条错答案会被一直沿用且再也不会去查。
+   *
+   * 所以写回要过三道闸：
+   *   1. 把握度不足的不写（`reconcileMinConf`）。裸字母、孤立字母、单选靠选项原文
+   *      勉强命中的，本来就是「猜」，猜中与否无从判断，不值得固化成知识。
+   *   2. 用户手改过的不受第 1 条限制 —— 他改完才交卷，答案是他自己的判断。
+   *   3. 题库已有不同答案时不覆盖，改记一条争议。两次作答互相矛盾说明这道题本身不可靠，
+   *      静默覆盖只会让题库在两个答案之间来回摇摆。人工可用「导出争议题」核对。
+   */
   function reconcileAfterPass() {
     const got = collectSubmittedAnswers();
     if (!got || !got.items.length) {
@@ -2011,16 +2061,67 @@
       store.set('lastExam', null);
       return;
     }
-    let n = 0;
-    got.items.forEach((it) => {
-      saveEntry(it.stem, it.type, it.picked, it.pickedLetters, {
-        verified: true, src: 'exam',
+    const minConf = Number(CONFIG.reconcileMinConf) || 0.8;
+    const b = bank();
+    let written = 0;
+    let skippedLow = 0;
+    let conflicts = 0;
+    let edited = 0;
+
+    batchWrite(() => {
+      got.items.forEach((it) => {
+        const key = fpKey(it.stem);
+        const old = b[key];
+        // 与本场脚本填的答案比对：不一致说明用户手动改过
+        const mine = history.find((h) => normStem(h.stem) === normStem(it.stem));
+        const submitted = (it.pickedLetters || []).slice().sort().join(',');
+        const mineLetters = mine ? (mine.letters || []).slice().sort().join(',') : null;
+        const userEdited = !!mine && mineLetters !== null && mineLetters !== submitted;
+        const conf = mine && mine.conf != null ? mine.conf : null;
+
+        // 闸 1：把握度不足且不是用户手改 → 不写
+        if (!userEdited && conf !== null && conf < minConf) {
+          skippedLow++;
+          return;
+        }
+        if (userEdited) edited++;
+
+        // 闸 2：题库已有不同答案 → 记争议，不覆盖。
+        // 但用户手改的答案优先：他改完才交卷，那是人的判断，不该被脚本的旧记录拦住。
+        //
+        // 比对**按答案文本**，不比字母：判断题在题库里存的是「对/错」而不是 A/B，
+        // 页面上却是 value="1"/"0" 或 "A"/"B"，拿字母比会 100% 误判成冲突
+        // （实测把两道判断题全报成争议）。文本不受题型与选项顺序影响，是唯一可靠的比较口径。
+        if (!userEdited && old && (old.a || []).length) {
+          const oldSet = (old.a || []).map((t) => normStem(t)).filter(Boolean).sort().join('|');
+          const newSet = (it.picked || []).map((t) => normStem(t)).filter(Boolean).sort().join('|');
+          if (oldSet && newSet && oldSet !== newSet) {
+            conflicts++;
+            try {
+              recordDispute(it.stem, it.type, (it.picked || []).map((t, i) => ({
+                letter: (it.pickedLetters || [])[i] || '', text: t,
+              })), [
+                { letters: (old.l || []).join('') || '题库', conf: 1, srcs: ['题库'], why: '题库已有答案' },
+                { letters: (it.pickedLetters || []).join('') || '本场', conf: conf == null ? 0.9 : conf, srcs: ['exam'], why: '本场提交' },
+              ]);
+            } catch (e) { /* 记争议失败不影响对账 */ }
+            return;
+          }
+        }
+
+        saveEntry(it.stem, it.type, it.picked, it.pickedLetters, {
+          verified: true, src: userEdited ? 'manual' : 'exam',
+        });
+        written++;
       });
-      n++;
     });
+
     store.set('lastExam', null);
     const from = got.from === 'dom' ? '页面实际选项' : '本场快照';
-    log(`本场通过，已把 ${n} 条答案标记为已验证（来源：${from}）`);
+    log(`本场通过，写回 ${written} 条（来源：${from}）`
+      + `${skippedLow ? `，跳过 ${skippedLow} 条把握不足的` : ''}`
+      + `${conflicts ? `，${conflicts} 条与题库冲突已记入争议题` : ''}`
+      + `${edited ? `，其中 ${edited} 条是你手改的` : ''}`, 'ok');
   }
 
   // 平台在交卷后只弹一句「您已通过本次考试！」/「您本次考试未通过！」，
@@ -3842,6 +3943,51 @@
       eq('手动对账：区间写法', parseManualVerdicts('1-3=对')[2], true);
       eq('手动对账：单点判错', parseManualVerdicts('5=错')[5], false);
       eq('手动对账：乱写不产生条目', Object.keys(parseManualVerdicts('随便写点')).length, 0);
+
+      // ---------- 答案映射（题库 → 页面选项） ----------
+      const OM = [
+        { letter: 'A', text: '工资性收入' },
+        { letter: 'B', text: '经营性收入净额' },
+        { letter: 'C', text: '财产性收入所得' },
+        { letter: 'D', text: '转移收入' },
+      ];
+      const qm = (type = 'multi') => ({ type, stem: '居民可支配收入的构成包括（ ）。', options: OM });
+      const E3 = { a: ['工资性收入', '经营性收入', '财产性收入'], l: ['A', 'B', 'C'] };
+      eq('多选：文本只对上一部分时不半答（返回 null 转联网）',
+        resolveAnswer(qm('multi'), E3), null);
+      eq('多选：文本三项全对上时正常命中',
+        resolveAnswer({ type: 'multi', stem: 'x', options: [
+          { letter: 'A', text: '工资性收入' },
+          { letter: 'B', text: '经营性收入' },
+          { letter: 'C', text: '财产性收入' },
+          { letter: 'D', text: '转移收入' },
+        ] }, E3).map((o) => o.letter).join(''), 'ABC');
+      // 两个选项文本完全相同 → 挑第一个等于掷硬币
+      const OS = [
+        { letter: 'A', text: '社会建设' },
+        { letter: 'B', text: '社会建设' },
+      ];
+      eq('单选：两个选项都命中时不挑第一个',
+        resolveAnswer({ type: 'single', stem: 'x', options: OS }, { a: ['社会建设'], l: ['A'] }), null);
+      eq('单选：唯一命中时正常',
+        resolveAnswer({ type: 'single', stem: 'x', options: OM }, { a: ['工资性收入'], l: ['A'] })
+          .map((o) => o.letter).join(''), 'A');
+      // 题库只有字母（无文本）时按字母走：这是唯一可用信息
+      eq('题库只有字母时按字母命中',
+        resolveAnswer(qm('multi'), { a: [], l: ['A', 'C'] }).map((o) => o.letter).join(''), 'AC');
+      eq('题库只有字母但页面缺该字母时放弃',
+        resolveAnswer({ type: 'multi', stem: 'x', options: [
+          { letter: 'A', text: '甲' }, { letter: 'B', text: '乙' },
+        ] }, { a: [], l: ['A', 'C'] }), null);
+
+      // 冲突比对必须按文本：判断题题库存「对/错」，页面是 A/B 或 1/0
+      const setOf = (arr) => (arr || []).map((t) => normStem(t)).filter(Boolean).sort().join('|');
+      eq('冲突比对：判断题「对」与页面 A/B 不因字母不同而误判',
+        setOf(['对']) === setOf(['对']), true);
+      eq('冲突比对：同一答案不同顺序视为一致',
+        setOf(['甲', '乙']) === setOf(['乙', '甲']), true);
+      eq('冲突比对：确实不同的答案能识别',
+        setOf(['甲']) === setOf(['乙']), false);
 
       // ---------- 会话答案缓存 ----------
       const ck = answerCacheKey('新时代主要矛盾是什么', 'single', O4);
