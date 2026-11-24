@@ -221,8 +221,13 @@ setTimeout(function () {
     r.afterManualChange = q0.options.filter(function (o) {
       return o.input && o.input.checked;
     }).map(function (o) { return o.letter; });
-    // 触发对账
+    // 触发对账；再补一次 alert 模拟「平台重复弹窗」——
+    // 第二次不能再对账一遍（重复对账会把题库写乱）
     window.alert('您已通过本次考试！');
+    window.alert('您已通过本次考试！');
+    var h5 = document.getElementById('csta-panel-host');
+    var logText = (h5 && h5.shadowRoot) ? h5.shadowRoot.querySelector('#fx-log').textContent : '';
+    r.reconcileRuns = (logText.match(/开始对账/g) || []).length;
     // 读回题库里第 1 题存的答案
     var bank = JSON.parse(localStorage.getItem('gwx_bank') || '{}');
     var key = t.fpKey(q0.stem);
@@ -374,6 +379,8 @@ ok('对账写回的是改后的答案（不是脚本快照的 C）',
   JSON.stringify(exam.reconciledAnswer) === JSON.stringify(['文化建设']),
   JSON.stringify(exam.reconciledAnswer));
 ok('对账把 ok 计为 1', exam.reconciledOk === 1, String(exam.reconciledOk));
+ok('平台重复弹「已通过」只对账一次（不会重复写库）',
+  exam.reconcileRuns === 1, `对账 ${exam.reconcileRuns} 次`);
 ok('主按钮初始为「开始」', exam.btnTextIdle === '开始', String(exam.btnTextIdle));
 ok('初始态主按钮不带 active 类', exam.btnHasStopClass === false);
 ok('暂停按钮文案为「暂停」', exam.pauseText === '暂停', String(exam.pauseText));

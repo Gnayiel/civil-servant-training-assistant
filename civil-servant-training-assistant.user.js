@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.3.4
+// @version      1.3.5
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
@@ -33,7 +33,7 @@
 
   // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
   // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.4';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.5';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';
@@ -253,13 +253,17 @@
         return dft;
       }
     },
-    set(k, v) {
+    /**
+     * quiet：批量/重试场景用。一次操作重试三遍会把同一条错误刷三行，
+     * 把真正有用的上下文挤出日志框；由调用方汇总成一条更好读。
+     */
+    set(k, v, quiet) {
       try {
         if (typeof GM_setValue === 'function') GM_setValue(NS + k, v);
         else localStorage.setItem(NS + k, JSON.stringify(v));
         return true;
       } catch (e) {
-        log('存储写入失败：' + e.message, 'error');
+        if (!quiet) log('存储写入失败：' + e.message, 'error');
         return false;
       }
     },
@@ -381,22 +385,52 @@
     }
   }
 
+  /**
+   * 题库是否真的落到了存储里。
+   *
+   * 落盘的写法是「写一次 → 读回来自查」，因为 GM 存储可能在配额满、
+   * 隐私模式、扩展异常时静默拒绝写入。以前重试三次仍失败就默默把内存缓存当成已保存：
+   * 面板照旧显示「题库 442 题」、日志照旧说「补全内置题库 442 题」，
+   * 用户刷新页面才发现什么都没存下。现在把这个事实记下来，让上层如实汇报。
+   */
+  let bankPersisted = true;
+  let bankPersistWarned = false;
+
   function bankFlush() {
     if (batchDepth > 0) {
       bankDirty = true;
       return;
     }
     let out = null;
+    let ok = false;
+    let lastErr = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       const clearedAt = Math.max(bankClearedAt, readClearedAt());
       out = mergeBanks(readDiskBank(), bankCache || {}, clearedAt);
-      store.set('bank', out);
-
+      try {
+        if (typeof GM_setValue === 'function') GM_setValue(NS + 'bank', out);
+        else localStorage.setItem(NS + 'bank', JSON.stringify(out));
+      } catch (e) {
+        lastErr = e;
+      }
       const check = readDiskBank();
-      const mineAllThere = Object.keys(out).every((k) => check[k]);
-      if (mineAllThere) break;
+      ok = Object.keys(out).every((k) => check[k]);
+      if (ok) break;
     }
+    bankPersisted = ok;
+    if (!ok && !bankPersistWarned) {
+      bankPersistWarned = true;
+      log('题库写不进浏览器存储'
+        + (lastErr ? `（${lastErr.message}）` : '（写入后读回为空）')
+        + '：本次改动只在内存里，刷新后会丢失。请检查油猴的存储配额或隐私模式', 'error');
+    }
+    if (ok) bankPersistWarned = false;
     bankCache = out || {};
+  }
+
+  /** 给「保存成功」类日志补一句实话；没落盘时不能只说成功 */
+  function saveNote() {
+    return bankPersisted ? '' : '（未能写入存储，刷新后会丢失）';
   }
 
   /**
@@ -1737,7 +1771,12 @@
   }
 
   // ==================== 交卷 ====================
-  async function submitExam() {
+  async function submitExam(opts = {}) {
+    // 已经交过就不再提交：二次 POST gradeExamSave.do 等于把记下的成绩再交一遍。
+    // 重考时 runExam 会把 examSubmitted 复位，所以正常流程不受影响。
+    if (examSubmitted && !opts.force) {
+      return { ok: false, msg: '本场已交卷，不再重复提交', already: true };
+    }
     const form = document.querySelector(SEL.examForm);
     if (!form) return { ok: false, msg: '未找到试卷表单' };
     const fd = new FormData(form);
@@ -1769,6 +1808,8 @@
       // JSONP 形如 myCallbackFunction("isOk")
       const m = text.match(/"([^"]*)"/) || text.match(/'([^']*)'/);
       const val = m ? m[1] : text.trim().replace(/[^\w]/g, '');
+      // 提交出去就算本场结束（通过与否都一样），别再让循环继续点
+      if (val === 'isOk') examSubmitted = true;
       return { ok: val === 'isOk', msg: val, raw: text.slice(0, 200) };
     } catch (e) {
       return { ok: false, msg: '请求失败：' + e.message };
@@ -1778,6 +1819,16 @@
   // ==================== 考试流程 ====================
   let examRunning = false;
   let examAbort = false;
+  /**
+   * 本场是否已交卷（手动点页面按钮、或脚本自动交卷）。
+   *
+   * 交卷之后必须收手，两个理由：
+   *   1. 卷子已经提交，继续点选项毫无意义，只会在日志里刷出「回读不一致」；
+   *   2. 更危险的是**二次交卷** —— 自动交卷开着时，循环跑完会再 POST 一次
+   *      gradeExamSave.do，等于把已经记下的成绩再提交一遍。
+   * 实测旧实现：交卷时已答 2 题，交卷后仍继续答完剩下 3 题。
+   */
+  let examSubmitted = false;
   // 暂停：只在两题之间生效（已点的选项不回滚）。与法宣的 paused 语义一致。
   let pausedFlag = false;
   /**
@@ -1805,6 +1856,23 @@
   function liveLetters(q) {
     return q.options.filter((o) => o.input && o.input.checked)
       .map((o) => o.letter).sort().join(',');
+  }
+
+  /**
+   * 标记「本场已交卷」并立刻收手：停掉答题循环、掐掉在途请求、刷新顶栏。
+   * 返回 true 表示这是第一次标记（用于避免重复对账）。
+   */
+  function markSubmitted(reason) {
+    if (examSubmitted) return false;
+    examSubmitted = true;
+    if (examRunning) {
+      examAbort = true;
+      pausedFlag = false;
+      abortInflight();
+      log(`检测到${reason}，已停止作答（卷子已提交，继续点选项没有意义）`, 'warn');
+    }
+    if (panel && panel.refresh) panel.refresh();
+    return true;
   }
 
   /**
@@ -1839,6 +1907,7 @@
     examRunning = true;
     examAbort = false;
     pausedFlag = false;
+    examSubmitted = false;   // 新一轮（含重考）开始，允许再次交卷
     totalQ = questions.length;
     panel.setState('答题中');
     panel.setProgress(0, questions.length);
@@ -1868,11 +1937,12 @@
         const q = questions[qi];
         const no = qi + 1;   // 卷面题号：history 与手动对账都用它，不用数组下标
         if (examAbort) {
-          log('已中止作答');
+          // 交卷导致的停止已经在 markSubmitted 里说过了，不重复刷屏
+          if (!examSubmitted) log('已中止作答');
           break;
         }
         await waitWhilePaused();
-        if (examAbort) break;
+        if (examAbort || examSubmitted) break;
         // 真「续答」：该题已按同样的答案填过就不再动它。
         // 以前不判这一条，点两次「开始」会把整份卷子重答一遍，
         // history 也跟着翻倍（面板显示「已答 10/5」）。
@@ -1918,7 +1988,9 @@
       panel.setProgress(done, questions.length);
       panel.refresh();
       panel.setTone(unknown ? 'busy' : 'idle');
-      log(`作答完成：${done}/${questions.length} 题已填，${unknown} 题未定`);
+      log(examSubmitted
+        ? `已交卷：交卷前填了 ${done}/${questions.length} 题`
+        : `作答完成：${done}/${questions.length} 题已填，${unknown} 题未定`);
 
       // 记录本次作答，交卷后用于对账
       store.set('lastExam', {
@@ -1938,13 +2010,13 @@
         // 状态词与其它路径统一成「已停止」，数字交给统计行（避免面板出现四种停止文案）
         panel.setState('已停止');
         panel.setTone('busy');
-        log(`已停止：本次填了 ${done}/${questions.length} 题`);
+        if (!examSubmitted) log(`已停止：本次填了 ${done}/${questions.length} 题`);
         return;
       }
 
       if (CONFIG.autoSubmit && unknown === 0 && unsupported) {
         log('存在未处理的题型，已跳过自动交卷，请人工检查后提交', 'warn');
-      } else if (CONFIG.autoSubmit && unknown === 0) {
+      } else if (CONFIG.autoSubmit && unknown === 0 && !examSubmitted) {
         log('自动交卷已开启，正在提交…');
         const r = await submitExam();
         log(`交卷结果：${r.msg}`);
@@ -2118,7 +2190,7 @@
 
     store.set('lastExam', null);
     const from = got.from === 'dom' ? '页面实际选项' : '本场快照';
-    log(`本场通过，写回 ${written} 条（来源：${from}）`
+    log(`本场通过，写回 ${written} 条（来源：${from}）${saveNote()}`
       + `${skippedLow ? `，跳过 ${skippedLow} 条把握不足的` : ''}`
       + `${conflicts ? `，${conflicts} 条与题库冲突已记入争议题` : ''}`
       + `${edited ? `，其中 ${edited} 条是你手改的` : ''}`, 'ok');
@@ -2134,10 +2206,19 @@
       try {
         const s = String(msg);
         if (/已通过本次考试/.test(s)) {
-          log('检测到交卷通过，开始对账');
-          reconcileAfterPass();
+          // 先收手再对账：对账要读「交卷那一刻」的页面状态，
+          // 如果循环还在点选项，读到的可能已经是交卷之后补点的答案。
+          //
+          // 只在「第一次标记为已交卷」时对账：自动交卷那条路已经在 runExam 里
+          // 对过账了，平台的弹窗随后还会冒一次，重复对账只会刷一条
+          // 「没有可对账的作答记录」的假警告。
+          if (markSubmitted('交卷通过')) {
+            log('检测到交卷通过，开始对账');
+            reconcileAfterPass();
+          }
           panel.setState('已通过');
         } else if (/未通过本次考试/.test(s)) {
+          markSubmitted('交卷未通过');
           panel.setState('未通过，可重考');
         }
       } catch (e) { /* 提示归提示，不因对账失败挡住用户 */ }
@@ -2963,7 +3044,8 @@
           ok++;
         });
       });
-      log(`手动对账完成：确认 ${ok} 题写回题库（判错的不入库）`, ok ? 'ok' : 'warn');
+      log(`手动对账完成：确认 ${ok} 题写回题库（判错的不入库）${saveNote()}`,
+        ok && bankPersisted ? 'ok' : 'warn');
       api.refresh();
     }
 
@@ -3302,7 +3384,8 @@
           try {
             log(`读取 ${file.name}（${(file.size / 1024).toFixed(1)} KB）`);
             const r = importData(String(ev.target.result || ''));
-            log(`导入：${r.msg}`, r.ok ? 'ok' : 'error');
+            log(`导入：${r.msg}${r.ok ? saveNote() : ''}`,
+              r.ok && bankPersisted ? 'ok' : 'error');
             api.refresh();
           } catch (err) {
             log('导入失败：' + err.message, 'error');
@@ -3375,7 +3458,8 @@
     // 补全内置：脚本升级带来新题、或误清空后用它一次补回（本脚本独有）
     on('fx-reseed', () => {
       const n = mergeSeed();
-      log(n ? `补全内置题库 ${n} 题` : '内置题库已齐，无需补全', 'ok');
+      log(n ? `补全内置题库 ${n} 题${saveNote()}` : '内置题库已齐，无需补全',
+        n && !bankPersisted ? 'error' : 'ok');
       api.refresh();
     });
 
@@ -3383,11 +3467,23 @@
     on('fx-clear-bank', () => {
       if (!confirm('清空全部题库？（连内置 442 题一起清，可用「补全内置」恢复）')) return;
       bankClearedAt = Date.now();
-      store.set('bankClearedAt', bankClearedAt);
+      // 三个写缺一不可：清空时间戳（防止别的标签页把旧条目合并回来）、
+      // 空题库本体、以及「未播种」标记。
+      //
+      // 这里**不能**走 bankFlush：它的职责是「把磁盘内容合并进来再写回」，
+      // 用它来清空等于把刚清掉的条目又合并回来（实测清完还剩 5 条）。
+      // 清空必须直接写空库，然后读回核对，这才是权威状态。
+      const tsOk = store.set('bankClearedAt', bankClearedAt, true);
       bankCache = {};
-      store.set('bank', {});
-      store.set('seeded', false);
-      log('题库已清空（可点「补全内置」恢复）', 'ok');
+      const bankOk = store.set('bank', {}, true);
+      const seedOk = store.set('seeded', false, true);
+      const back = readDiskBank();
+      bankPersisted = tsOk && bankOk && seedOk && Object.keys(back).length === 0;
+      if (!bankPersisted && !bankPersistWarned) {
+        bankPersistWarned = true;
+        log('题库清空没能写入存储：刷新后旧数据会回来。请检查油猴的存储配额或隐私模式', 'error');
+      }
+      log(`题库已清空（可点「补全内置」恢复）${saveNote()}`, bankPersisted ? 'ok' : 'error');
       api.refresh();
     });
 
