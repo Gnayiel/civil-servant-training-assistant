@@ -18,6 +18,9 @@ const ROOT = resolve(HERE, '..');
 const TMP = join(ROOT, '.tmp-smoke');
 const REQUIRE = process.argv.includes('--require-browser');
 const SCRIPT = readFileSync(join(ROOT, 'civil-servant-training-assistant.user.js'), 'utf8');
+// 脚本的 VERSION 取自 GM_info.script.version，桩里必须填真版本，
+// 否则「检查更新」的版本比较会把本地版本当成非法值，永远判不出版本更新。
+const LOCAL = (/^\/\/\s*@version\s+(\S+)/m.exec(SCRIPT) || [, '0.0.0'])[1];
 
 const CANDIDATES = [
   process.env.CHROME_BIN,
@@ -64,8 +67,20 @@ window.GM_getValue = function (k, d) {
   return v === null ? d : JSON.parse(v);
 };
 window.GM_setValue = function (k, v) { localStorage.setItem(k, JSON.stringify(v)); };
-window.GM_xmlhttpRequest = function () { throw new Error('冒烟测试不应联网'); };
-window.GM_info = { script: { version: 'test' } };
+// 默认拒绝联网。探针要测「检查更新」时，先往 window.__gmResponses 里放
+// URL 片段 -> 响应体 的映射，命中就走映射，未命中仍然抛错，防联网语义不变。
+window.GM_xmlhttpRequest = function (o) {
+  var map = window.__gmResponses || {};
+  for (var k in map) {
+    if (o.url.indexOf(k) >= 0) {
+      var body = map[k];
+      setTimeout(function () { o.onload({ status: 200, responseText: body }); }, 0);
+      return;
+    }
+  }
+  throw new Error('冒烟测试不应联网');
+};
+window.GM_info = { script: { version: '__VERSION__' } };
 // 无头浏览器里 alert 会阻塞渲染直到有人点确定，--dump-dom 会一直挂着。
 // 脚本的 hookSubmitAlert 会保留原始 alert 并在最后调用它，所以必须在脚本加载前就把它换成空函数。
 window.alert = function (msg) { (window.__alerts = window.__alerts || []).push(String(msg)); };
@@ -77,7 +92,7 @@ window.addEventListener('error', function (e) { if (e && e.message) window.__pag
 function build(fixture, probe, budgetMs, fakePath) {
   const html = readFileSync(join(HERE, 'fixtures', fixture), 'utf8');
   return html
-    .replace('</head>', `${STUB}</head>`)
+    .replace('</head>', `${STUB.replace('__VERSION__', LOCAL)}</head>`)
     .replace('</body>', `<pre id="__r"></pre>
 <script>${SCRIPT}</script>
 <script>${probe}</script>
@@ -112,7 +127,7 @@ function run(html, budgetMs, fakePath = '') {
 }
 
 // ------------------------------------------------------------------ 试卷页
-console.log('\n[1/2] 试卷页：解析与填答');
+console.log('\n[1/3] 试卷页：解析与填答');
 const examProbe = `
 setTimeout(function () {
   var r = { at: Date.now(), steps: [] };
@@ -369,7 +384,7 @@ ok('面板显示题库条数', /\d+ 条/.test(exam.bankCnt || ''), exam.bankCnt)
 ok('面板识别出试卷题型', /5 题/.test(exam.examCnt || ''), exam.examCnt);
 
 // ------------------------------------------------------------------ 播放页
-console.log('\n[2/2] 播放页：失焦解锁');
+console.log('\n[2/3] 播放页：失焦解锁');
 const playerProbe = `
 setTimeout(function () {
   var r = { at: Date.now() };
@@ -432,6 +447,85 @@ ok('开关打开时拦截器生效（探针监听收不到 blur）', player.prob
 ok('关掉开关后拦截器放行（探针监听收到 blur）', player.probeOffPassed === true,
   String(player.probeOffPassed));
 ok('重新打开开关又恢复拦截', player.probeOnAgain === true);
+
+// ------------------------------------------------- 检查更新：多源合并取较高版本
+console.log('\n[3/3] 检查更新：CDN 滞后时仍能发现新版本');
+const NEWER = LOCAL.replace(/(\d+)$/, (n) => String(Number(n) + 1));
+const CDN_KEY = 'civil-servant-training-assistant.user.js';
+const API_KEY = 'api.github.com';
+
+// 三个场景依次跑：CDN 滞后 / 两源一致 / 两源都不可达。
+// 每个场景都点一次面板上的真按钮，走的是和用户完全相同的路径。
+const updateProbe = `
+(function () {
+  var scenarios = ${JSON.stringify([
+    { id: 'staleCdn', cdn: '1.0.0', api: 'v' + NEWER },
+    { id: 'same', cdn: LOCAL, api: 'v' + LOCAL },
+    { id: 'down', cdn: null, api: null },
+  ])};
+  var CDN_KEY = ${JSON.stringify(CDN_KEY)};
+  var API_KEY = ${JSON.stringify(API_KEY)};
+  var out = [];
+
+  function bodyFor(v, isApi) {
+    return isApi ? JSON.stringify({ tag_name: v }) : '// ==UserScript==' + String.fromCharCode(10)
+      + '// @version ' + v + String.fromCharCode(10);
+  }
+
+  function step(i) {
+    if (i >= scenarios.length) {
+      document.getElementById('__r').textContent = JSON.stringify({ scenarios: out });
+      return;
+    }
+    var sc = scenarios[i];
+    window.__gmResponses = {};
+    if (sc.cdn) window.__gmResponses[CDN_KEY] = bodyFor(sc.cdn, false);
+    if (sc.api) window.__gmResponses[API_KEY] = bodyFor(sc.api, true);
+
+    var host = document.getElementById('csta-panel-host');
+    var sr = host && host.shadowRoot;
+    var btn = sr && sr.querySelector('#fx-checkupdate');
+    var notice = sr && sr.querySelector('#fx-notice');
+    var status = sr && sr.querySelector('#fx-status');
+    var logbox = sr && sr.querySelector('#fx-log');
+    if (!btn) { out.push({ id: sc.id, err: 'no-button' }); step(i + 1); return; }
+
+    btn.click();
+    // checkUpdate 是异步的（Promise + 定时器），等它落定再读界面
+    setTimeout(function () {
+      out.push({
+        id: sc.id,
+        status: status ? status.textContent : null,
+        noticeShown: notice ? notice.style.display !== 'none' : null,
+        noticeText: notice ? notice.textContent : null,
+        logTail: logbox ? logbox.textContent.slice(-260) : null,
+      });
+      step(i + 1);
+    }, 320);
+  }
+  setTimeout(function () { step(0); }, 700);
+}());
+`;
+
+// 用播放页跑：试卷页 1200ms 会自动开始作答并覆盖状态栏，三个场景会被它改写
+const upd = run(build('player.html', updateProbe, 12000), 12000, 'gansu-spcrm/videoPlayGJ');
+const byId = Object.fromEntries((upd.scenarios || []).map((s) => [s.id, s]));
+
+ok('三个场景都跑到了按钮', Object.keys(byId).length === 3, Object.keys(byId).join(','));
+ok('CDN 停在 1.0.0 时仍报出新版本（来源 Releases API）',
+  /有新版本/.test((byId.staleCdn || {}).status || ''), (byId.staleCdn || {}).status);
+ok('CDN 滞后场景的日志写明来源是 GitHub Release',
+  /GitHub Release/.test((byId.staleCdn || {}).logTail || ''),
+  (byId.staleCdn || {}).logTail);
+ok('CDN 滞后时会弹出提示条',
+  (byId.staleCdn || {}).noticeShown === true, String((byId.staleCdn || {}).noticeShown));
+ok('两源一致时判为已是最新',
+  /已是最新/.test((byId.same || {}).status || ''), (byId.same || {}).status);
+ok('两源都不可达时明确报失败，不谎称已是最新',
+  /失败/.test((byId.down || {}).status || ''), (byId.down || {}).status);
+ok('失败时日志里带上每个源的失败原因',
+  /jsDelivr/.test((byId.down || {}).logTail || '') && /GitHub Release/.test((byId.down || {}).logTail || ''),
+  (byId.down || {}).logTail);
 
 rmSync(TMP, { recursive: true, force: true });
 console.log(failed ? `\n合计 ${failed} 项失败\n` : '\n页面冒烟全部通过\n');

@@ -30,7 +30,9 @@
   const IS_BROWSER = typeof window !== 'undefined' && typeof document !== 'undefined';
   if (IS_BROWSER && window.top !== window.self) return;
 
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.1.0';
+  // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
+  // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.2.1';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';

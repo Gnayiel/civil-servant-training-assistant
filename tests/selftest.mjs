@@ -92,6 +92,11 @@ const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 ok('package.json version 与 @version 一致', pkg.version === one('version'),
   `package.json=${pkg.version} @version=${one('version')}`);
 
+// 脚本里 GM_info 缺失时的兜底版本是第三个副本，漂了会让面板显示旧版本号
+const fallback = /GM_info\.script\.version\)\s*\|\|\s*'([^']+)'/.exec(code);
+ok('VERSION 兜底值与 @version 一致', !!fallback && fallback[1] === one('version'),
+  fallback ? `兜底=${fallback[1]} @version=${one('version')}` : '没找到兜底写法');
+
 // ------------------------------------------------------------------ 体积
 console.log('\n[2/4] 体积与安全基线');
 const bytes = statSync(SCRIPT).size;
