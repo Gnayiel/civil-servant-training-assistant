@@ -128,9 +128,10 @@ setTimeout(function () {
   r.shadow = !!(host && host.shadowRoot);
   if (host && host.shadowRoot) {
     var q = function (s) { var el = host.shadowRoot.querySelector(s); return el ? el.textContent : null; };
-    r.state = q('[data-el="state"]');
-    r.bankCnt = q('[data-el="bankCnt"]');
-    r.examCnt = q('[data-el="examCnt"]');
+    // 新面板：状态在 #fx-status，题库与试卷摘要移到分类 badge
+    r.state = q('#fx-status');
+    r.bankCnt = q('#fx-gb-bank');
+    r.examCnt = q('#fx-gb-exam');
   }
   var parsed = window.__GWX_TEST__ ? window.__GWX_TEST__.parseExam() : [];
   r.parsed = parsed.map(function (q) {
@@ -153,19 +154,26 @@ setTimeout(function () {
   }
   // 开关是按钮而非勾选框：点击切换，并落到存储
   if (host && host.shadowRoot) {
-    var cb = host.shadowRoot.querySelector('[data-opt="autoSubmit"]');
+    var cb = host.shadowRoot.querySelector('#fx-autosubmit');
     r.toggleIsButton = !!cb && cb.tagName === 'BUTTON';
-    r.toggleTextBefore = cb ? cb.textContent : null;
+    r.toggleActiveBefore = cb ? cb.classList.contains('active') : null;
     if (cb) cb.click();
-    r.toggleTextAfter = cb ? cb.textContent : null;
+    r.toggleActiveAfter = cb ? cb.classList.contains('active') : null;
     r.togglePressed = cb ? cb.getAttribute('aria-pressed') : null;
     r.savedAutoSubmit = localStorage.getItem('gwx_cfg_autoSubmit');
     // 面板里不应再出现勾选框
     r.checkboxes = host.shadowRoot.querySelectorAll('input[type=checkbox]').length;
     r.toggleCount = host.shadowRoot.querySelectorAll('button.tog').length;
-    r.siteLabel = host.shadowRoot.querySelector('[data-el="site"]')
-      ? host.shadowRoot.querySelector('[data-el="site"]').textContent : null;
-    r.title = host.shadowRoot.querySelector('.hd b').textContent;
+    r.siteLabel = host.shadowRoot.querySelector('#fx-stats')
+      ? host.shadowRoot.querySelector('#fx-stats').textContent : null;
+    // 新面板标题在 .panel-title 的第二个 span（第一个是状态圆点）
+    var titleSpans = host.shadowRoot.querySelectorAll('.panel-title span');
+    r.title = titleSpans.length > 1 ? titleSpans[1].textContent : null;
+    r.verBadge = host.shadowRoot.querySelector('.title-ver')
+      ? host.shadowRoot.querySelector('.title-ver').textContent : null;
+    r.groupCount = host.shadowRoot.querySelectorAll('.group').length;
+    r.hasProgress = !!host.shadowRoot.querySelector('#fx-fill');
+    r.hasLogBox = !!host.shadowRoot.querySelector('.log-box');
   }
   // 诊断包结构（脱敏细节由 Node 自检精确覆盖，这里不看正则）
   guard('diag', function () {
@@ -207,12 +215,12 @@ setTimeout(function () {
     var host2 = document.getElementById('csta-panel-host');
     var sr = host2 && host2.shadowRoot;
     if (!sr) { r.btnFlow = 'no-panel'; return; }
-    var btn = sr.querySelector('[data-act="answer"]');
+    var btn = sr.querySelector('#fx-primary');
     r.btnTextIdle = btn ? btn.textContent : null;
     // 借 setState 驱动按钮文案（与 runExam 内部用的是同一个入口）
     window.__GWX_TEST__.setPanelState && window.__GWX_TEST__.setPanelState('正在作答…');
     r.btnTextRunning = btn ? btn.textContent : null;
-    r.btnHasStopClass = btn ? btn.classList.contains('stop') : null;
+    r.btnHasStopClass = btn ? btn.classList.contains('running') : null;
     window.__GWX_TEST__.setPanelState && window.__GWX_TEST__.setPanelState('作答 5/5');
     r.btnTextAfter = btn ? btn.textContent : null;
   });
@@ -229,7 +237,7 @@ setTimeout(function () {
     // 先经面板「清空题库」清掉内存缓存与存储，再补全
     var h3 = document.getElementById('csta-panel-host');
     var sr3 = h3 && h3.shadowRoot;
-    var clr = sr3 && sr3.querySelector('[data-act="clearBank"]');
+    var clr = sr3 && sr3.querySelector('#fx-clear-bank');
     if (clr) clr.click();
     r.afterClear = Object.keys(JSON.parse(localStorage.getItem('gwx_bank') || '{}')).length;
     r.refilledCount = t.mergeSeed();
@@ -252,7 +260,7 @@ setTimeout(function () {
     // 清空后重新导入
     var h4 = document.getElementById('csta-panel-host');
     var sr4 = h4 && h4.shadowRoot;
-    var clr2 = sr4 && sr4.querySelector('[data-act="clearBank"]');
+    var clr2 = sr4 && sr4.querySelector('#fx-clear-bank');
     if (clr2) clr2.click();
     var res = t.importData(csv);
     r.importMsg = res && res.msg;
@@ -309,15 +317,19 @@ ok('多选收窄答案后旧选项被清除（A、B 保留，C、D 取消）',
   JSON.stringify(exam.afterNarrow) === JSON.stringify(['A', 'B']),
   (exam.afterNarrow || []).join(',') || '未取到');
 ok('面板开关是按钮而非勾选框', exam.toggleIsButton === true);
-ok('开关点击后文案从「关」变「开」',
-  exam.toggleTextBefore === '关' && exam.toggleTextAfter === '开',
-  `${exam.toggleTextBefore} -> ${exam.toggleTextAfter}`);
+ok('开关点击后 active 类翻转',
+  exam.toggleActiveBefore === false && exam.toggleActiveAfter === true,
+  `${exam.toggleActiveBefore} -> ${exam.toggleActiveAfter}`);
 ok('开关同步 aria-pressed', exam.togglePressed === 'true', String(exam.togglePressed));
 ok('面板内没有勾选框', exam.checkboxes === 0, String(exam.checkboxes));
-ok('面板共有 6 个胶囊开关', exam.toggleCount === 6, String(exam.toggleCount));
+ok('面板有 5 个分类组（与法宣同一结构）', exam.groupCount === 5, String(exam.groupCount));
+ok('面板有进度条', exam.hasProgress === true);
+ok('面板有日志框', exam.hasLogBox === true);
+ok('版本徽章带 v 前缀', /^v\S+$/.test(exam.verBadge || ''), String(exam.verBadge));
 ok('面板标题为「公务员网络培训助手」', exam.title === '公务员网络培训助手', String(exam.title));
-ok('本地文件不在省份表内，状态条显示「通用适配」',
-  exam.siteLabel === '通用适配', String(exam.siteLabel));
+ok('底部统计显示适配省份（本地文件为通用适配）',
+  /通用适配/.test(exam.siteLabel || ''), String(exam.siteLabel));
+ok('统计行同时显示题库条数', /题库 \d+ 条/.test(exam.siteLabel || ''), String(exam.siteLabel));
 ok('面板开关写入存储', exam.savedAutoSubmit === 'true', String(exam.savedAutoSubmit));
 ok('诊断包格式正确', exam.diagFormat === 'gwypx-diagnostics', String(exam.diagFormat));
 ok('诊断包识别页面类型为 exam', exam.diagPageType === 'exam', String(exam.diagPageType));
@@ -332,10 +344,10 @@ ok('对账写回的是改后的答案（不是脚本快照的 C）',
   JSON.stringify(exam.reconciledAnswer) === JSON.stringify(['文化建设']),
   JSON.stringify(exam.reconciledAnswer));
 ok('对账把 ok 计为 1', exam.reconciledOk === 1, String(exam.reconciledOk));
-ok('主按钮初始文案为「开始作答」', exam.btnTextIdle === '开始作答', String(exam.btnTextIdle));
-ok('作答中主按钮变为「停止作答」', exam.btnTextRunning === '停止作答', String(exam.btnTextRunning));
-ok('停止态带 stop 样式类', exam.btnHasStopClass === true);
-ok('作答结束后按钮回到「开始作答」', exam.btnTextAfter === '开始作答', String(exam.btnTextAfter));
+ok('主按钮初始为「开始」', exam.btnTextIdle === '开始', String(exam.btnTextIdle));
+ok('作答中主按钮变为「停止」', exam.btnTextRunning === '停止', String(exam.btnTextRunning));
+ok('运行态带 running 样式类', exam.btnHasStopClass === true);
+ok('作答结束后按钮回到「开始」', exam.btnTextAfter === '开始', String(exam.btnTextAfter));
 ok('种子指纹稳定', exam.seedSigStable === true, String(exam.seedSig));
 ok('题库已齐时 mergeSeed 幂等（返回 0）', exam.mergeWhenFull === 0,
   String(exam.mergeWhenFull));
@@ -372,9 +384,9 @@ setTimeout(function () {
   var host = document.getElementById('csta-panel-host');
   r.panel = !!(host && host.shadowRoot);
   if (r.panel) {
-    var el = host.shadowRoot.querySelector('[data-el="playCnt"]');
+    var el = host.shadowRoot.querySelector('#fx-gb-play');
     r.playCnt = el ? el.textContent : null;
-    var st = host.shadowRoot.querySelector('[data-el="state"]');
+    var st = host.shadowRoot.querySelector('#fx-status');
     r.state = st ? st.textContent : null;
   }
   // 验证拦截器本身是否生效：用一个独立注册的 blur 监听当探针。
@@ -382,7 +394,7 @@ setTimeout(function () {
   var probeHits = 0;
   window.addEventListener('blur', function () { probeHits += 1; });
   var sr2 = host && host.shadowRoot;
-  var tg = sr2 && sr2.querySelector('[data-opt="unlockBlur"]');
+  var tg = sr2 && sr2.querySelector('#fx-unlock');
   if (tg) {
     // 开关默认是「开」：拦截器应吃掉这次 blur，探针收不到
     probeHits = 0;

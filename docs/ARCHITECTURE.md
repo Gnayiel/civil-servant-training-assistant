@@ -18,7 +18,36 @@
 
 两条最容易踩的边界：**页面结构变化只改 `SEL`**；**答案以「交卷通过」为唯一验证依据**。
 
-## 2. 多省份适配
+## 2. 与「法宣在线助手」的家族关系
+
+本脚本是 `faxuanyun-legal-exam-assistant` 的**同族实现**：两个平台结构相似（都是
+`gradeExamInfo.do` 试卷 + `window.onblur` 反作弊播放页），但业务不同（法宣在线是学法考试，
+本脚本是公务员网络培训，多了多省份适配）。
+
+### 界面必须对齐
+
+面板的设计系统直接取自法宣在线，改这里就该两边一起改：
+
+| 项 | 约定 |
+| --- | --- |
+| 设计令牌 | `--fx-bg` / `--fx-surface` / `--fx-accent` / `--fx-radius` 等，值完全相同 |
+| 面板 id | 内部容器统一 `#fx-panel`，宿主 `#csta-panel-host`（前缀区分脚本，避免互抢） |
+| 结构 | 标题栏（圆点 + 名称 + 版本徽章）→ 顶栏三列 → 分类折叠 → 进度条 → 状态 → 统计 → 日志框 |
+| 分类 | 收起时右侧显示摘要（badge），展开后隐藏 |
+| 日志 | 按级别给左边框着色：`log-info/ok/warn/error/debug` |
+| 收态 | 收成 132px 窄条，只留顶栏 |
+| 交互 | 标题栏可拖拽；分组标题支持 Enter / 空格展开 |
+
+**刻意一致的细节**：按钮 34px 高（触屏 40px）、`prefers-reduced-motion` 下禁用过渡、
+按钮 `:focus-visible` 用强调色描边。这些在法宣脚本里踩过一遍，直接沿用。
+
+### 刻意不同的部分
+
+- **多省份适配**：法宣只有甘肃一个平台，本脚本有 `SITES` 数组。
+- **播放页解锁**：法宣是答题脚本，没有播放器；本脚本的 `playerGuard` 是独有的。
+- **存储前缀**：法宣用 `fx_`，本脚本用 `gwx_`。共用前缀会让两边的题库互相污染。
+
+## 3. 多省份适配
 
 各省「公务员网络培训」平台多为同一套系统的不同部署：试卷页的 `div.shiti > div.shiti_l`、答题卡、播放页的 `window.onblur` 反作弊，结构高度相似。差异集中在三处：**域名**、**播放器路径**、**外壳类名**。
 
@@ -66,7 +95,7 @@ resolveSite('gwypx.gsdj.gov.cn.evil.com') // → null（后缀匹配不会误判
 
 第 7 步可选但值得做：同构平台的小差异（比如选项容器换个类名）往往只有真实页面才能暴露。
 
-## 3. 代码分段
+## 4. 代码分段
 
 | 段 | 职责 | 关键函数 |
 | --- | --- | --- |
@@ -86,9 +115,9 @@ resolveSite('gwypx.gsdj.gov.cn.evil.com') // → null（后缀匹配不会误判
 
 分层原则：高层只依赖低层的纯函数。流程控制不碰选择器细节，对账不碰 DOM 颜色。这样 Node 自检才能只加载脚本就断言大部分判断逻辑。
 
-## 4. 页面地图
+## 5. 页面地图
 
-### 4.1 试卷页 `/gradeExam/gradeExamInfo.do?courseId=&gradeId=`
+### 5.1 试卷页 `/gradeExam/gradeExamInfo.do?courseId=&gradeId=`
 
 服务端直出静态 HTML，结构如下（判断题多包了一层，是最容易解析错的地方）：
 
@@ -118,7 +147,7 @@ form#examInfoFrom
 
 选项文本取自 `dl` 下的 `dd`（带 `A.` 前缀，需剥掉）；判断题的 `dl` 没有 `dd`，文本从 `label` 取，控件 `value` 是 `1` / `0`，脚本统一改写成字母 `A` / `B` 便于导出。
 
-### 4.2 播放页 `/gansu-spcrm/videoPlayGJ/...`
+### 5.2 播放页 `/gansu-spcrm/videoPlayGJ/...`
 
 页面直链由 `common.js#BeginStudy` 拼出，11 段参数以 `/` 分隔，第 12 段是 `strEnc(token,'adks1'…)` 的签名串。页面自身：
 
@@ -128,11 +157,11 @@ window.onblur = isLeaveOrEnter;   // 唯一一行反作弊
 
 `isLeaveOrEnter()` 弹提示，2 秒后 `myJwPlayer.play(false)`。计时链路是 `getPlayTime()`（仅在 `state==='PLAYING'` 时累加墙钟）→ 每 10 秒 `doAjaxPost()` → `POST /gansu-spcrm/rest/AddCourse`。
 
-### 4.3 课程列表
+### 5.3 课程列表
 
 `/gradeCourse/getGradeCourseList.do`，分页参数是 `currentPage`（不是 `page`）。每门课 `BeginStudy(courseId, code, scorm, name)` 与 `examInfoDivShow(courseId, name, 100, 60, 10, 15)` 两个入口。脚本在此页只显示面板，不做批量操作。
 
-## 5. 一道题的完整路径
+## 6. 一道题的完整路径
 
 ```mermaid
 flowchart LR
@@ -156,7 +185,7 @@ flowchart LR
 - **文本优先**：答案存选项文本，平台打乱顺序也不会错位；字母只作兜底。
 - **宁缺勿错**：题库无答案且未开 AI 时跳过该题并记日志，不猜。
 
-## 6. 题库模型
+## 7. 题库模型
 
 | 字段 | 含义 |
 | --- | --- |
@@ -206,7 +235,7 @@ DOM 读不到时（页面已跳走）才回退到快照，并在日志里标明�
 | `cfg_*` | 面板各开关与 AI 接口配置 |
 | `panelPos` / `groups` | 面板位置与分组折叠状态 |
 
-## 7. 反作弊机制与拦截点
+## 8. 反作弊机制与拦截点
 
 | 平台提示 | 代码里的实现 | 脚本行为 |
 | --- | --- | --- |
@@ -218,7 +247,7 @@ DOM 读不到时（页面已跳走）才回退到快照，并在日志里标明�
 
 **脚本不做这件事。** 原因写在 [README](../README.md) 的「边界」一节：解除失焦暂停是改善体验，伪造学时是骗取记录。
 
-## 8. 扩展点
+## 9. 扩展点
 
 | 想改什么 | 先看哪里 | 必须同步什么 |
 | --- | --- | --- |

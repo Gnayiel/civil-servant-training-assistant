@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         公务员网络培训助手
-// @name:en      Civil Servant Training Assistant
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.1.0
-// @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。内置甘肃省适配，其他省份按同一结构可扩展。
-// @description:en  Generic helper for Chinese civil-servant online training platforms: auto-answer papers, keep videos playing when the window loses focus, local question bank.
+// @version      1.2.0
+// @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
 // @match        https://gwypx.gsdj.gov.cn/*
 // @match        http://gwypx.gsdj.gov.cn/*
+// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@main/civil-servant-training-assistant.user.js
+// @updateURL    https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@main/civil-servant-training-assistant.user.js
 // @run-at       document-idle
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -20,8 +20,6 @@
 // @connect      dashscope.aliyuncs.com
 // @connect      open.bigmodel.cn
 // @noframes
-// @updateURL    https://cdn.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@main/civil-servant-training-assistant.user.js
-// @downloadURL  https://cdn.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@main/civil-servant-training-assistant.user.js
 // ==/UserScript==
 
 (function () {
@@ -786,6 +784,7 @@
     examRunning = true;
     examAbort = false;
     panel.setState('正在作答…');
+    panel.setProgress(0, questions.length);
     panel.setTone('busy');
 
     // 填空/问答等题型本脚本不处理，页面若有就禁用自动交卷，避免交白卷
@@ -822,7 +821,8 @@
         const r = applyAnswer(q, decided.picked);
         if (r.matched) {
           done++;
-          log(`第 ${q.qid} 题作答（${decided.source}）：${r.want.join(',')}`);
+          const srcLabel = { bank: '题库', ai: 'AI' }[decided.source] || decided.source;
+          log(`第 ${q.qid} 题作答（${srcLabel}）：${r.want.join(',')}`);
         } else {
           unknown++;
           unknownList.push(q);
@@ -832,6 +832,9 @@
       }
 
       panel.setState(`作答 ${done}/${questions.length}`);
+      panel.setProgress(done, questions.length);
+      // 分类摘要要跟着刷新，否则「答题」那格一直停在开跑前的 0/5
+      panel.refresh();
       panel.setTone(unknown ? 'busy' : 'idle');
       log(`作答完成：${done} 题已填，${unknown} 题未定`);
 
@@ -1001,7 +1004,7 @@
           if (!CONFIG.unlockBlur) return;
           if (document.hidden) ev.stopImmediatePropagation();
         }, true);
-        log('已解除失焦暂停（窗口切换不再中断播放）');
+        log('已解除失焦暂停（窗口切换不再中断播放）', 'ok');
       }
 
       if (CONFIG.keepPlaying) this.watchVideo();
@@ -1034,7 +1037,8 @@
           }, 600);
         });
         v.play().catch(() => {});
-        log('已接管播放器：意外暂停会自动恢复');
+        log('已接管播放器：意外暂停会自动恢复', 'ok');
+        if (panel && panel.refresh) panel.refresh();
         return true;
       };
       if (!attach()) {
@@ -1052,476 +1056,6 @@
       }, true);
     },
   };
-
-  // ==================== 面板 ====================
-  let panel = null;
-
-  // 开关统一用按钮呈现（.tog），不用勾选框：
-  // 一行一个设置，右侧胶囊按钮显示当前状态，点一下切换。
-  const TOGGLES = [
-    { k: 'autoAnswer', label: '自动作答', grp: 'exam', hint: '检测到试卷即开始' },
-    { k: 'autoSubmit', label: '自动交卷', grp: 'exam', hint: '仅在全部题目都有答案时提交' },
-    { k: 'unlockBlur', label: '解除失焦暂停', grp: 'play' },
-    { k: 'keepPlaying', label: '意外暂停续播', grp: 'play' },
-    { k: 'muteForAutoplay', label: '静音自动播放', grp: 'play' },
-    { k: 'enableAI', label: 'AI 兜底', grp: 'api' },
-  ];
-
-  function toggleRows(grp) {
-    return TOGGLES.filter((t) => t.grp === grp).map((t) => `
-      <div class="row">
-        <span class="lb">${t.label}${t.hint ? `<em>${t.hint}</em>` : ''}</span>
-        <button class="tog" data-opt="${t.k}" aria-pressed="false">关</button>
-      </div>`).join('');
-  }
-
-  function createPanel() {
-    if (panel) return panel;
-    const host = document.createElement('div');
-    host.id = 'csta-panel-host';
-    host.style.cssText = 'position:fixed;z-index:2147483000;right:16px;bottom:16px;';
-    const root = host.attachShadow({ mode: 'open' });
-
-    const style = document.createElement('style');
-    style.textContent = `
-      :host { all: initial; }
-      * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
-          "Microsoft YaHei", "PingFang SC", sans-serif; }
-      .wrap {
-        width: 300px; background: #1b1e24; color: #e7eaf0; border-radius: 12px;
-        box-shadow: 0 12px 40px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.06);
-        font-size: 12px; overflow: hidden; border: 1px solid #2b303a;
-      }
-
-      /* 标题栏 */
-      .hd {
-        display: flex; align-items: center; gap: 7px; padding: 10px 12px;
-        background: #21252d; cursor: move; border-bottom: 1px solid #2b303a;
-      }
-      .dot { width: 7px; height: 7px; border-radius: 50%; background: #4caf7d; flex: none;
-             box-shadow: 0 0 0 3px rgba(76,175,125,.15); transition: background .2s, box-shadow .2s; }
-      .dot.busy { background: #e0a33e; box-shadow: 0 0 0 3px rgba(224,163,62,.15); }
-      .dot.err  { background: #d9534f; box-shadow: 0 0 0 3px rgba(217,83,79,.15); }
-      .hd b { font-size: 12.5px; font-weight: 600; letter-spacing: .2px; white-space: nowrap; }
-      .hd .ver { color: #6f7889; font-size: 10px; font-variant-numeric: tabular-nums; }
-      .hd .sp { flex: 1; }
-      .hd .ic {
-        background: transparent; border: 0; color: #8b94a5; cursor: pointer;
-        font-size: 14px; line-height: 1; padding: 3px 6px; border-radius: 5px;
-        transition: background .15s, color .15s;
-      }
-      .hd .ic:hover { background: #2f353f; color: #fff; }
-
-      /* 状态条 */
-      .state {
-        display: flex; align-items: center; gap: 6px; padding: 7px 12px;
-        background: #171a20; color: #9fb2c9; font-size: 11px;
-        border-bottom: 1px solid #242832;
-      }
-      .state .txt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .state .site { color: #6f7889; font-size: 10px; flex: none; }
-
-      .body { max-height: min(66vh, 560px); overflow-y: auto; overscroll-behavior: contain; }
-      .body::-webkit-scrollbar { width: 7px; }
-      .body::-webkit-scrollbar-thumb { background: #3a414d; border-radius: 4px; }
-      .body::-webkit-scrollbar-track { background: transparent; }
-
-      /* 分组 */
-      .grp { border-bottom: 1px solid #242832; }
-      .grp:last-child { border-bottom: 0; }
-      .grp > .gh {
-        display: flex; align-items: center; gap: 7px; padding: 9px 12px;
-        cursor: pointer; user-select: none; color: #aab4c4; font-weight: 600; font-size: 11.5px;
-        transition: background .15s, color .15s;
-      }
-      .grp > .gh:hover { background: #222731; color: #d6dde9; }
-      .grp > .gh::before {
-        content: ''; width: 3px; height: 11px; border-radius: 2px;
-        background: #3a414d; transition: background .15s;
-      }
-      .grp.open > .gh::before { background: #4c8bf5; }
-      .grp > .gh .cnt { margin-left: auto; color: #6f7889; font-weight: 400; font-size: 10.5px; }
-      .grp > .gc { padding: 2px 12px 11px; display: none; }
-      .grp.open > .gc { display: block; }
-
-      /* 设置行 + 胶囊开关 */
-      .row { display: flex; align-items: center; gap: 8px; margin: 7px 0; }
-      .row .lb { flex: 1; color: #c5ccd8; line-height: 1.35; }
-      .row .lb em { display: block; font-style: normal; color: #6f7889; font-size: 10px; margin-top: 1px; }
-      .tog {
-        flex: none; min-width: 44px; height: 22px; padding: 0 9px; border-radius: 11px;
-        border: 1px solid #3a414d; background: #23272f; color: #8b94a5;
-        font-size: 10.5px; font-weight: 500; cursor: pointer; font-family: inherit;
-        transition: background .16s, border-color .16s, color .16s;
-      }
-      .tog:hover { border-color: #4d586a; color: #b9c2d0; }
-      .tog.on { background: #2b5fd9; border-color: #3b6ee8; color: #fff; }
-      .tog.on:hover { background: #376df0; border-color: #4c7ef5; }
-
-      /* 按钮 */
-      .btn {
-        padding: 7px 10px; border-radius: 7px; cursor: pointer; font-family: inherit;
-        border: 1px solid #373f4c; background: #262b34; color: #dbe1ea; font-size: 11.5px;
-        transition: background .15s, border-color .15s, transform .06s;
-        white-space: nowrap;
-      }
-      .btn:hover { background: #2f3541; border-color: #4a5568; }
-      .btn:active { transform: scale(.985); }
-      .btn.pri { background: #2b5fd9; border-color: #3b6ee8; color: #fff; font-weight: 600; }
-      .btn.pri:hover { background: #376df0; }
-      .btn.ghost { background: transparent; }
-      .btn.danger { background: #3a2326; border-color: #5d3338; color: #e8a3a3; }
-      .btn.stop { background: #7a3a2a; border-color: #a04a35; color: #ffe2d8; }
-      .btn.stop:hover { background: #8d4331; }
-      .btn.danger:hover { background: #4a2a2e; border-color: #77414a; }
-      .btn:disabled { opacity: .45; cursor: not-allowed; }
-      .acts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 4px 0 8px; }
-      .acts.one { grid-template-columns: 1fr; }
-      .acts.three { grid-template-columns: 1fr 1fr 1fr; }
-      .acts .btn { width: 100%; }
-      .acts.three .btn { padding: 6px 4px; font-size: 11px; }
-
-      /* 日志 */
-      .logs {
-        height: 128px; overflow-y: auto; background: #12151a; border-radius: 7px;
-        padding: 7px 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        font-size: 10px; line-height: 1.6; color: #93a3ba; margin: 7px 0;
-        border: 1px solid #23272f;
-      }
-      .logs div { word-break: break-all; }
-      .logs .warn { color: #dfbe7c; }
-      .logs .error { color: #e89090; }
-
-      .hint { color: #6b7484; font-size: 10px; line-height: 1.55; margin: 5px 0 2px; }
-      .sep { height: 1px; background: #242832; margin: 8px 0; }
-
-      textarea, input[type=text] {
-        width: 100%; background: #12151a; color: #dbe1ea; border: 1px solid #2f3540;
-        border-radius: 6px; padding: 6px 8px; font-size: 11px; font-family: inherit;
-        transition: border-color .15s;
-      }
-      textarea:focus, input[type=text]:focus { outline: none; border-color: #3b6ee8; }
-      textarea { height: 58px; resize: vertical; }
-      input[type=text] + input[type=text] { margin-top: 5px; }
-
-      .collapsed .body, .collapsed .state { display: none; }
-    `;
-    root.appendChild(style);
-
-    const wrap = document.createElement('div');
-    wrap.className = 'wrap';
-    wrap.innerHTML = `
-      <div class="hd">
-        <span class="dot" data-el="dot"></span>
-        <b>${TITLE}</b><span class="ver">v${VERSION}</span>
-        <span class="sp"></span>
-        <button class="ic" data-act="min" title="收起面板（Alt+H）">–</button>
-      </div>
-      <div class="state">
-        <span class="txt" data-el="state">就绪</span>
-        <span class="site" data-el="site">${ACTIVE_SITE.label}</span>
-      </div>
-      <div class="body">
-        <div class="grp open" data-grp="exam">
-          <div class="gh">答题<span class="cnt" data-el="examCnt">未检测到试卷</span></div>
-          <div class="gc">
-            <div class="acts">
-              <button class="btn pri" data-act="answer">开始作答</button>
-              <button class="btn" data-act="submit">交卷</button>
-            </div>
-            ${toggleRows('exam')}
-            <div class="hint">交卷不可逆。平台只回「通过 / 未通过」，通过后才会把本场答案记为已验证。</div>
-          </div>
-        </div>
-        <div class="grp" data-grp="play">
-          <div class="gh">观看限制<span class="cnt" data-el="playCnt">—</span></div>
-          <div class="gc">
-            ${toggleRows('play')}
-            <div class="hint">只解除「切窗口就暂停」。视频仍按原速播放，上报的进度与时长保持真实。</div>
-          </div>
-        </div>
-        <div class="grp" data-grp="api">
-          <div class="gh">AI 接口<span class="cnt" data-el="apiCnt">未启用</span></div>
-          <div class="gc">
-            ${toggleRows('api')}
-            <div class="hint">题库未收录的题才会调用。留空则只用本地题库。</div>
-            <input type="text" data-el="aiUrl" placeholder="接口地址 /v1/chat/completions">
-            <input type="text" data-el="aiModel" placeholder="模型名，如 deepseek-chat">
-            <input type="text" data-el="aiKey" placeholder="API Key">
-            <div class="acts one"><button class="btn" data-act="saveAI">保存接口</button></div>
-          </div>
-        </div>
-        <div class="grp" data-grp="bank">
-          <div class="gh">题库<span class="cnt" data-el="bankCnt">0 条</span></div>
-          <div class="gc">
-            <div class="acts">
-              <button class="btn" data-act="export">导出 JSON</button>
-              <button class="btn" data-act="exportCsv">导出 CSV</button>
-            </div>
-            <textarea data-el="importBox" placeholder="粘贴题库 JSON 或 CSV"></textarea>
-            <div class="acts">
-              <button class="btn" data-act="import">导入</button>
-              <button class="btn" data-act="reseed">补全内置</button>
-            </div>
-            <div class="acts one">
-              <button class="btn danger" data-act="clearBank">清空题库</button>
-            </div>
-          </div>
-        </div>
-        <div class="grp" data-grp="log">
-          <div class="gh">日志<span class="cnt" data-el="logCnt">0</span></div>
-          <div class="gc">
-            <div class="logs" data-el="logs"></div>
-            <div class="acts three">
-              <button class="btn" data-act="copyLog">复制</button>
-              <button class="btn" data-act="diag">诊断包</button>
-              <button class="btn" data-act="clearLog">清空</button>
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
-    root.appendChild(wrap);
-    document.documentElement.appendChild(host);
-
-    const $ = (s) => root.querySelector(s);
-    const stateEl = $('[data-el="state"]');
-    const dotEl = $('[data-el="dot"]');
-    const logsEl = $('[data-el="logs"]');
-
-    const api = {
-      setState(s) {
-        stateEl.textContent = s;
-        stateEl.title = s;
-        // 作答进行中时，主按钮变成「停止作答」，避免用户以为点了没反应
-        const ansBtn = root.querySelector('[data-act="answer"]');
-        if (ansBtn) {
-          const running = /正在作答/.test(s);
-          ansBtn.textContent = running ? '停止作答' : '开始作答';
-          ansBtn.classList.toggle('stop', running);
-        }
-      },
-      // 顶部状态点：idle 绿 / busy 黄 / err 红
-      setTone(tone) {
-        dotEl.className = 'dot' + (tone === 'busy' ? ' busy' : (tone === 'err' ? ' err' : ''));
-      },
-      pushLog(line, level) {
-        const d = document.createElement('div');
-        if (level === 'warn' || level === 'error') d.className = level;
-        d.textContent = line;
-        logsEl.appendChild(d);
-        while (logsEl.childElementCount > 200) logsEl.removeChild(logsEl.firstChild);
-        logsEl.scrollTop = logsEl.scrollHeight;
-        $('[data-el="logCnt"]').textContent = String(logsEl.childElementCount);
-      },
-      refresh() {
-        $('[data-el="bankCnt"]').textContent = bankCount() + ' 条';
-        const qs = parseExam();
-        $('[data-el="examCnt"]').textContent = qs.length
-          ? `${qs.length} 题 · ${[...new Set(qs.map((q) => TYPE_TEXT[q.type]))].join('/')}`
-          : '未检测到试卷';
-        $('[data-el="playCnt"]').textContent = isPlayerPage() ? '已接管' : '—';
-        $('[data-el="apiCnt"]').textContent = CONFIG.enableAI && CONFIG.aiUrl
-          ? (CONFIG.aiModel || '已配置') : '未启用';
-        if (!$('[data-el="aiUrl"]').value) {
-          $('[data-el="aiUrl"]').value = CONFIG.aiUrl || '';
-          $('[data-el="aiModel"]').value = CONFIG.aiModel || '';
-          $('[data-el="aiKey"]').value = CONFIG.aiKey || '';
-        }
-        syncToggles();
-      },
-    };
-
-    // 开关按钮：读状态渲染，点击切换
-    function syncToggles() {
-      root.querySelectorAll('[data-opt]').forEach((el) => {
-        const on = !!CONFIG[el.dataset.opt];
-        el.classList.toggle('on', on);
-        el.textContent = on ? '开' : '关';
-        el.setAttribute('aria-pressed', on ? 'true' : 'false');
-      });
-    }
-
-    root.querySelectorAll('[data-opt]').forEach((el) => {
-      el.addEventListener('click', () => {
-        const k = el.dataset.opt;
-        CONFIG[k] = !CONFIG[k];
-        store.set('cfg_' + k, CONFIG[k]);
-        syncToggles();
-        if ((k === 'unlockBlur' || k === 'keepPlaying') && CONFIG[k]) playerGuard.install();
-        // 关闭解锁时，页面原本注册的 onblur 已在安装时被清空，无法还原；
-        // 这里只保证 blur 监听不再拦截，并说明需刷新才能完全回到平台原行为。
-        if (k === 'unlockBlur' && !CONFIG[k] && playerGuard.installed) {
-          log('已停止拦截失焦；如需完全恢复平台原有的暂停行为，请刷新播放页', 'warn');
-        }
-        log(`${labelOf(k)}已${CONFIG[k] ? '开启' : '关闭'}`);
-      });
-    });
-
-    function labelOf(k) {
-      const t = TOGGLES.find((x) => x.k === k);
-      return t ? t.label : k;
-    }
-
-    // 分组折叠
-    root.querySelectorAll('.grp > .gh').forEach((gh) => {
-      gh.addEventListener('click', () => {
-        gh.parentElement.classList.toggle('open');
-        saveGroups();
-      });
-    });
-    function saveGroups() {
-      const st = {};
-      root.querySelectorAll('.grp').forEach((g) => { st[g.dataset.grp] = g.classList.contains('open'); });
-      store.set('groups', st);
-    }
-    // 双向恢复：存了 true 就展开，存了 false 就收起。
-    // 只处理 false 会让「用户展开的默认收起组」在刷新后又缩回去。
-    const gs = store.get('groups', null);
-    if (gs) {
-      root.querySelectorAll('.grp').forEach((g) => {
-        const want = gs[g.dataset.grp];
-        if (want === true) g.classList.add('open');
-        else if (want === false) g.classList.remove('open');
-      });
-    }
-
-    // 按钮
-    root.addEventListener('click', async (ev) => {
-      const btn = ev.target.closest('[data-act]');
-      if (!btn) return;
-      const act = btn.dataset.act;
-      if (act === 'min') {
-        wrap.classList.toggle('collapsed');
-        return;
-      }
-      if (act === 'answer') {
-        await runExam();
-        api.refresh();
-        return;
-      }
-      if (act === 'submit') {
-        if (!confirm('确定交卷？交卷后无法修改本场答案。')) return;
-        api.setState('正在交卷…');
-        const r = await submitExam();
-        log(`交卷结果：${r.msg}`);
-        if (r.ok) {
-          api.setState('已通过');
-          api.setTone('idle');
-          reconcileAfterPass();
-        } else {
-          api.setState('未通过（' + r.msg + '）');
-          api.setTone('err');
-        }
-        return;
-      }
-      if (act === 'saveAI') {
-        CONFIG.aiUrl = $('[data-el="aiUrl"]').value.trim();
-        CONFIG.aiModel = $('[data-el="aiModel"]').value.trim();
-        CONFIG.aiKey = $('[data-el="aiKey"]').value.trim();
-        store.set('cfg_aiUrl', CONFIG.aiUrl);
-        store.set('cfg_aiModel', CONFIG.aiModel);
-        store.set('cfg_aiKey', CONFIG.aiKey);
-        log(`接口已保存：${CONFIG.aiUrl || '（空）'} / ${CONFIG.aiModel || '（空）'}`);
-        api.refresh();
-        return;
-      }
-      if (act === 'export') return exportJson();
-      if (act === 'exportCsv') return exportCsv();
-      if (act === 'import') {
-        const box = $('[data-el="importBox"]');
-        const r = importData(box.value);
-        log(`导入：${r.msg}`);
-        api.refresh();
-        return;
-      }
-      if (act === 'reseed') {
-        const n = mergeSeed();
-        log(n ? `补全内置题库 ${n} 条` : '内置题库已齐，无需补全');
-        api.refresh();
-        return;
-      }
-      if (act === 'clearBank') {
-        if (!confirm('清空全部题库？此操作不可撤销。')) return;
-        // 先落清空时刻再清条目：另一标签页若在此期间落盘，
-        // 它那些早于此刻创建的条目会被墓碑挡住，不会整库复活。
-        bankClearedAt = Date.now();
-        store.set('bankClearedAt', bankClearedAt);
-        bankCache = {};
-        store.set('bank', {});
-        store.set('seeded', false);
-        // seedSig 故意保留：清空后不该在下次打开页面时又自动灌回 442 条，
-        // 恢复必须由用户点「补全内置」触发。
-        log('题库已清空（可点「补全内置」恢复）');
-        api.refresh();
-        return;
-      }
-      if (act === 'diag') {
-        exportDiagnostics();
-        return;
-      }
-      if (act === 'clearLog') {
-        api.clearLog();
-        return;
-      }
-      if (act === 'copyLog') {
-        try {
-          await navigator.clipboard.writeText(api.logText());
-          log('日志已复制');
-        } catch (e) {
-          log('复制失败，请手动选择', 'warn');
-        }
-        return;
-      }
-    });
-
-    // 拖动
-    const hd = $('.hd');
-    let dragging = false;
-    let ox = 0;
-    let oy = 0;
-    hd.addEventListener('mousedown', (e) => {
-      if (e.target.closest('button')) return;
-      dragging = true;
-      const r = host.getBoundingClientRect();
-      ox = e.clientX - r.left;
-      oy = e.clientY - r.top;
-      e.preventDefault();
-    });
-    window.addEventListener('mousemove', (e) => {
-      if (!dragging) return;
-      host.style.left = Math.max(0, e.clientX - ox) + 'px';
-      host.style.top = Math.max(0, e.clientY - oy) + 'px';
-      host.style.right = 'auto';
-      host.style.bottom = 'auto';
-    });
-    window.addEventListener('mouseup', () => {
-      if (!dragging) return;
-      dragging = false;
-      const r = host.getBoundingClientRect();
-      store.set('panelPos', { left: r.left, top: r.top });
-    });
-    const pos = store.get('panelPos', null);
-    if (pos) {
-      host.style.left = pos.left + 'px';
-      host.style.top = pos.top + 'px';
-      host.style.right = 'auto';
-      host.style.bottom = 'auto';
-    }
-
-    api.toggleCollapse = () => wrap.classList.toggle('collapsed');
-    api.clearLog = () => {
-      logsEl.innerHTML = '';
-      $('[data-el="logCnt"]').textContent = '0';
-    };
-    api.logText = () => Array.from(logsEl.children).map((d) => d.textContent).join('\n');
-    api.setSite = (label) => { $('[data-el="site"]').textContent = label; };
-
-    panel = api;
-    syncToggles();
-    api.refresh();
-    return api;
-  }
 
   // ==================== 导入导出 ====================
   function downloadFile(name, content, mime) {
@@ -1545,24 +1079,24 @@
 
   function exportJson() {
     const payload = {
-      format: 'gwypx-exam-bank',
+      format: 'csta-bank',
       schema: 1,
       version: VERSION,
       exportedAt: new Date().toISOString(),
       bank: bank(),
     };
-    downloadFile(`gwypx-bank-${stamp()}.json`, JSON.stringify(payload, null, 2), 'application/json');
-    log(`已导出 ${bankCount()} 条`);
+    downloadFile(`csta-bank-${stamp()}.json`, JSON.stringify(payload, null, 2), 'application/json');
+    log(`已导出 ${bankCount()} 条`, 'ok');
   }
 
   function csvCell(v) {
-    let s = String(v == null ? '' : v);
+    let x = String(v == null ? '' : v);
     // 公式注入消毒
-    if (/^[=+\-@]/.test(s)) s = "'" + s;
-    return '"' + s.replace(/"/g, '""') + '"';
+    if (/^[=+\-@]/.test(x)) x = "'" + x;
+    return '"' + x.replace(/"/g, '""') + '"';
   }
 
-  // 来源标签：让使用者一眼看出这条答案是内置的、导入的，还是交卷验证过的
+  // 来源标签：让人一眼看出这条答案是内置的、导入的，还是交卷验证过的
   const SRC_TEXT = {
     seed: '内置',
     import: '导入',
@@ -1570,9 +1104,11 @@
     user: '手改',
   };
 
-  // CSV 行拼装：既给导出用，也让测试能在不触发下载的情况下验证格式。
-  // 列全部是真数据——早期版本有一列「错误次数」，但它恒为 0
-  // （平台不给逐题对错，脚本无从知道哪题错），留着只会误导，已替换为「答案来源」与「验证通过次数」。
+  /**
+   * CSV 行拼装：既给导出用，也让测试能在不触发下载的情况下验证格式。
+   * 列全部是真数据——早期版本有一列「错误次数」，但它恒为 0
+   * （平台不给逐题对错，脚本无从知道哪题错），留着只会误导。
+   */
   function bankToCsv() {
     const rows = [['题型', '题目', '正确答案', '答案来源', '验证通过次数', '命中次数']
       .map(csvCell).join(',')];
@@ -1590,9 +1126,8 @@
   }
 
   function exportCsv() {
-    const csv = bankToCsv();
-    downloadFile(`gwypx-bank-${stamp()}.csv`, csv, 'text/csv');
-    log(`已导出 CSV ${bankCount()} 条`);
+    downloadFile(`csta-bank-${stamp()}.csv`, bankToCsv(), 'text/csv');
+    log(`已导出 CSV ${bankCount()} 条`, 'ok');
   }
 
   // 极简 CSV 解析（支持引号包裹与双引号转义）
@@ -1632,7 +1167,15 @@
         const src = data.bank || data;
         const list = Array.isArray(src) ? src : Object.values(src);
         list.forEach((e) => {
-          if (!e || !e.q) return;
+          if (!e) return;
+          // 紧凑四元组 [题型, 题干, 答案文本, 答案字母]
+          if (Array.isArray(e)) {
+            if (!e[1]) return;
+            saveEntry(e[1], e[0] || 'single', e[2] || [], e[3] || [], { src: 'import' });
+            added++;
+            return;
+          }
+          if (!e.q) return;
           saveEntry(e.q, e.t || 'single', e.a || [], e.l || [], { src: 'import' });
           added++;
         });
@@ -1640,8 +1183,7 @@
         const rows = parseCsv(t);
         const header = rows[0] || [];
         const idxQ = header.findIndex((h) => /题目|题干|question/i.test(h));
-        // 排除「答案来源」这类含「答案」但装的不是答案的列。
-        // 不排除的话，一旦导出列顺序变化，「来源」会被当成正确答案读进去。
+        // 排除「答案来源」这类含「答案」但装的不是答案的列
         const idxA = header.findIndex((h) => /答案|answer/i.test(h) && !/来源|出处|source/i.test(h));
         const idxT = header.findIndex((h) => /题型|type/i.test(h));
         const start = idxQ >= 0 ? 1 : 0;
@@ -1653,7 +1195,7 @@
           if (!String(q).trim()) continue;
           const type = /多选/.test(ty) ? 'multi' : (/判断/.test(ty) ? 'judge' : 'single');
           // 只按明确的分隔符切分：英文答案里的空格不应被当成多选分隔
-          const answers = String(a).split(/[|;；、,，]+/).map((s) => s.trim()).filter(Boolean);
+          const answers = String(a).split(/[|;；、,，]+/).map((x) => x.trim()).filter(Boolean);
           saveEntry(q, type, answers, [], { src: 'import' });
           added++;
         }
@@ -1661,6 +1203,833 @@
       return { ok: true, msg: `导入 ${added} 条` };
     } catch (e) {
       return { ok: false, msg: '解析失败：' + e.message };
+    }
+  }
+
+  // ==================== 面板 ====================
+  /**
+   * 面板与「法宣在线助手」(faxuanyun-legal-exam-assistant) 同源：
+   * 设计令牌、结构、交互一律对齐，两个脚本并排装在一起时看起来是一套东西。
+   *
+   * 结构：标题栏(圆点+名称+版本) → 顶栏(主/次/收起) → 分类折叠组 → 进度条+状态+统计+日志
+   * 类名沿用 fx- 前缀（family 约定），宿主 id 用 csta- 区分脚本。
+   */
+  let panel = null;
+
+  const PANEL_NAME = '公务员网络培训助手';
+
+  // 分类定义。badge 在收起时显示摘要，展开后隐藏（按钮自己带状态）。
+  const PANEL_GROUPS = [
+    { key: 'exam', name: '答题' },
+    { key: 'play', name: '观看限制' },
+    { key: 'api', name: '接口设置' },
+    { key: 'bank', name: '题库与导入' },
+    { key: 'log', name: '日志与自检' },
+  ];
+  const PANEL_GROUP_KEYS = PANEL_GROUPS.map((g) => g.key);
+
+  // 与法宣在线同一套设计令牌，改这里两个脚本就该一起改
+  const PANEL_CSS = `
+    :host { all: initial; position: fixed; top: 0; left: 0; z-index: 2147483000; }
+    #fx-panel {
+        /* ---- 设计令牌 ---- */
+        --fx-bg: #12161d;
+        --fx-bg-soft: #1a1f28;
+        --fx-surface: #212836;
+        --fx-surface-2: #2a3242;
+        --fx-line: #313a4b;
+        --fx-line-soft: #262e3c;
+        --fx-text: #e8ecf3;
+        --fx-text-dim: #98a4b8;
+        --fx-text-mute: #8794a8;
+        --fx-accent: #5aa9ff;
+        --fx-accent-soft: rgba(90, 169, 255, 0.14);
+        --fx-ok: #46c98a;
+        --fx-warn: #f0b445;
+        --fx-error: #f2666f;
+        --fx-radius: 10px;
+        --fx-radius-sm: 7px;
+        --fx-btn-h: 34px;
+
+        position: fixed; top: 80px; right: 15px;
+        background: var(--fx-bg);
+        color: var(--fx-text);
+        border: 1px solid var(--fx-line);
+        border-radius: 14px; padding: 10px;
+        font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+        font-size: 13px; line-height: 1.45;
+        width: min(300px, calc(100vw - 24px)); max-height: calc(100vh - 92px);
+        display: flex; flex-direction: column;
+        box-sizing: border-box;
+        box-shadow: 0 18px 48px -12px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+    }
+    #fx-panel * { box-sizing: border-box; font-family: inherit; font-size: 13px; }
+    #fx-panel ::-webkit-scrollbar { width: 8px; height: 8px; }
+    #fx-panel ::-webkit-scrollbar-thumb { background: #39435a; border-radius: 8px; }
+    #fx-panel ::-webkit-scrollbar-thumb:hover { background: #47536e; }
+    #fx-panel ::-webkit-scrollbar-track { background: transparent; }
+
+    /* ---------- 按钮 ---------- */
+    #fx-panel button {
+        background: var(--fx-surface); border: 1px solid var(--fx-line); color: var(--fx-text);
+        padding: 0 8px; border-radius: var(--fx-radius-sm); cursor: pointer;
+        height: var(--fx-btn-h); white-space: nowrap;
+        display: flex; align-items: center; justify-content: center;
+        font-weight: 500; transition: background 0.14s, border-color 0.14s, color 0.14s, transform 0.1s;
+    }
+    #fx-panel button:hover { background: var(--fx-surface-2); border-color: #43506a; }
+    #fx-panel button:active { transform: translateY(1px); }
+    #fx-panel button:focus-visible { outline: 2px solid var(--fx-accent); outline-offset: 1px; }
+    #fx-panel button.active {
+        background: var(--fx-accent-soft); color: #cfe6ff;
+        border-color: rgba(90, 169, 255, 0.55); font-weight: 600;
+    }
+    #fx-panel button[disabled] { opacity: 0.45; cursor: not-allowed; }
+    #fx-panel .row { display: flex; gap: 6px; margin-bottom: 7px; align-items: center; }
+    #fx-panel .row:last-child { margin-bottom: 0; }
+    #fx-panel .row button { flex: 1; min-width: 0; padding: 0 6px; }
+    #fx-panel .row.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+    #fx-panel .row.grid-2 button { flex: none; }
+    @media (pointer: coarse) { #fx-panel { --fx-btn-h: 40px; } }
+    @media (prefers-reduced-motion: reduce) {
+        #fx-panel *, #fx-panel button { transition: none !important; animation: none !important; }
+        #fx-panel button:active { transform: none; }
+    }
+
+    /* ---------- 标题栏 ---------- */
+    #fx-panel .panel-title {
+        display: flex; align-items: center; gap: 7px;
+        margin: -2px -2px 9px; padding: 5px 8px 7px;
+        border-bottom: 1px solid var(--fx-line-soft);
+        cursor: move; user-select: none;
+    }
+    #fx-panel .panel-title span { font-size: 13.5px; font-weight: 650; letter-spacing: 0.2px; }
+    #fx-panel .title-dot { flex: none; width: 8px; height: 8px; border-radius: 50%;
+        background: var(--fx-text-mute); transition: background 0.2s, box-shadow 0.2s; }
+    #fx-panel .title-dot.on { background: var(--fx-ok); box-shadow: 0 0 0 3px rgba(70, 201, 138, 0.16); }
+    #fx-panel .title-dot.paused { background: var(--fx-warn); box-shadow: 0 0 0 3px rgba(240, 180, 69, 0.16); }
+    #fx-panel .title-ver { flex: none; margin-left: auto; padding: 1px 6px; border-radius: 999px;
+        background: var(--fx-bg-soft); border: 1px solid var(--fx-line);
+        color: var(--fx-text-mute); font-size: 10.5px; font-weight: 600; letter-spacing: 0.3px; }
+    #fx-panel .topbar { display: grid; grid-template-columns: 1.15fr 1fr 1fr; gap: 6px; margin-bottom: 9px; }
+    #fx-panel .topbar button { flex: none; min-width: 0; }
+    #fx-panel #fx-primary:not(.running) { background: var(--fx-accent-soft); border-color: rgba(90, 169, 255, 0.5); color: #cfe6ff; font-weight: 600; }
+    #fx-panel #fx-primary:hover { background: rgba(90, 169, 255, 0.22); }
+    #fx-panel #fx-primary.running { background: rgba(242, 102, 111, 0.16); border-color: rgba(242, 102, 111, 0.45); color: #ffd0d3; }
+
+    /* ---------- 内容区 ---------- */
+    #fx-panel .fx-content { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; padding-right: 2px; }
+
+    /* ---------- 分类折叠 ---------- */
+    #fx-panel .group { flex: none; margin-bottom: 7px; border: 1px solid var(--fx-line-soft);
+        border-radius: var(--fx-radius-sm); overflow: hidden; background: rgba(255, 255, 255, 0.012); }
+    #fx-panel .group-head { display: flex; align-items: center; gap: 7px; padding: 8px 9px;
+        cursor: pointer; user-select: none; transition: background 0.14s; }
+    #fx-panel .group-head:hover { background: rgba(255, 255, 255, 0.045); }
+    #fx-panel .group-head:focus-visible { outline: 2px solid var(--fx-accent); outline-offset: -2px; }
+    #fx-panel .group.open .group-head { border-bottom: 1px solid var(--fx-line-soft); }
+    #fx-panel .group-caret { flex: none; width: 9px; color: var(--fx-text-mute);
+        transition: transform 0.18s ease, color 0.18s; font-size: 10px; }
+    #fx-panel .group.open .group-caret { transform: rotate(90deg); color: var(--fx-accent); }
+    #fx-panel .group-name { flex: 1; font-weight: 600; white-space: nowrap; color: var(--fx-text); }
+    #fx-panel .group-badge { flex: none; max-width: 60%; color: var(--fx-text-dim);
+        font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #fx-panel .group.open .group-badge { display: none; }
+    #fx-panel .group-body { display: none; padding: 9px 9px 3px; }
+    #fx-panel .group.open .group-body { display: block; }
+
+    /* ---------- 进度 / 状态 / 统计 ---------- */
+    #fx-panel .bar { width: 100%; height: 4px; background: var(--fx-bg-soft); border-radius: 999px;
+        margin-top: 9px; overflow: hidden; flex: none; }
+    #fx-panel .fill { height: 100%; border-radius: 999px; width: 0%;
+        background: linear-gradient(90deg, #4a9eff, #6fd3ff); transition: width 0.35s ease; }
+    #fx-panel .status { margin-top: 8px; font-weight: 600; text-align: center; color: var(--fx-text); flex: none; }
+    #fx-panel .stats { margin-top: 5px; text-align: center; color: var(--fx-text-dim);
+        font-size: 12px; line-height: 1.45; flex: none; }
+
+    /* ---------- 提示条 ---------- */
+    #fx-panel .notice { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 8px;
+        background: rgba(240, 180, 69, 0.1); border: 1px solid rgba(240, 180, 69, 0.28);
+        border-radius: var(--fx-radius-sm); padding: 8px 9px; cursor: pointer; }
+    #fx-panel .notice-info { background: var(--fx-accent-soft); border-color: rgba(90, 169, 255, 0.3); }
+    #fx-panel .notice-warn { background: rgba(240, 180, 69, 0.1); border-color: rgba(240, 180, 69, 0.28); }
+    #fx-panel .notice-error { background: rgba(242, 102, 111, 0.1); border-color: rgba(242, 102, 111, 0.3); }
+    #fx-panel .notice span { flex: 1; line-height: 1.4; font-size: 12.5px; }
+
+    /* ---------- 设置表单 ---------- */
+    #fx-panel .settings { margin-bottom: 3px; }
+    #fx-panel .fld { display: block; margin-bottom: 7px; }
+    #fx-panel .fld i { display: block; font-style: normal; margin-bottom: 4px;
+        color: var(--fx-text-dim); font-size: 12px; }
+    #fx-panel input { width: 100%; height: 32px; background: var(--fx-bg-soft); color: var(--fx-text);
+        border: 1px solid var(--fx-line); border-radius: var(--fx-radius-sm); padding: 0 9px; font-size: 12.5px; }
+    #fx-panel input::placeholder { color: var(--fx-text-mute); }
+    #fx-panel input:focus { outline: none; border-color: var(--fx-accent); box-shadow: 0 0 0 3px var(--fx-accent-soft); }
+    #fx-panel .form-err { margin-bottom: 7px; color: #ffc4c9; font-size: 12px;
+        padding: 5px 8px; border-radius: 6px; background: rgba(242, 102, 111, 0.12); }
+
+    /* ---------- 日志 ---------- */
+    #fx-panel .log-box { margin-top: 9px; min-height: 88px;
+        max-height: min(180px, 26vh); overflow-y: auto; flex: 0 1 auto;
+        background: #0d1117; border: 1px solid var(--fx-line-soft); padding: 7px 6px;
+        border-radius: var(--fx-radius-sm); word-break: break-all; font-size: 12px;
+        font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+    #fx-panel .log-line { margin-bottom: 2px; padding: 1px 6px; border-radius: 4px;
+        border-left: 3px solid transparent; color: #c3cbd9; }
+    #fx-panel .log-info  { border-left-color: #3d4657; }
+    #fx-panel .log-ok    { border-left-color: var(--fx-ok); color: #c9f0dd; }
+    #fx-panel .log-warn  { border-left-color: var(--fx-warn); color: #ffe6b8; }
+    #fx-panel .log-error { border-left-color: var(--fx-error); color: #ffd0d3; }
+    #fx-panel .log-debug { border-left-color: var(--fx-accent); color: #b9d8ff; opacity: 0.9; }
+
+    /* ---------- 收起 ---------- */
+    #fx-panel.collapsed { width: min(132px, calc(100vw - 24px)); }
+    #fx-panel .collapse-title { display: none; }
+    #fx-panel.collapsed .fx-content, #fx-panel.collapsed .panel-title { display: none; }
+    #fx-panel.collapsed .collapse-title { display: flex; align-items: center; justify-content: center; gap: 6px;
+        font-weight: 600; margin-bottom: 8px; cursor: move; user-select: none; }
+    #fx-panel.collapsed .topbar { grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 0; }
+    #fx-panel.collapsed #fx-submit { display: none; }
+
+    @media (max-width: 380px) {
+        #fx-panel { width: calc(100vw - 16px); max-height: calc(100vh - 16px); padding: 8px; }
+        #fx-panel .log-box { max-height: 24vh; }
+    }
+  `;
+
+  /** 折叠状态归一化：只认已知分类，坏数据一律当收起 */
+  function normalizeGroupState(raw, keys) {
+    const src = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+    const out = {};
+    for (const k of (keys || PANEL_GROUP_KEYS)) out[k] = src[k] === true;
+    return out;
+  }
+
+  /** 分类标题右侧摘要（收起时可见，展开后隐藏） */
+  function groupBadge(key, ctx) {
+    const c = ctx || {};
+    if (key === 'exam') {
+      const bits = [];
+      if (c.questions) bits.push(`${c.answered || 0}/${c.questions} 题`);
+      else bits.push('无试卷');
+      if (c.autoSubmit) bits.push('自动交卷');
+      return bits.join(' · ');
+    }
+    // 只有当前页面才给状态，否则留空——试卷页上显示「未接管（播放）」
+    // 会让人以为功能坏了，其实只是这页没有播放器。
+    if (key === 'play') return c.applicable ? (c.unlocked ? '已接管' : '未接管') : '';
+    if (key === 'api') return c.enabled ? (c.model || '已配置') : '未启用';
+    if (key === 'bank') return `题库 ${c.bank || 0} 条`;
+    if (key === 'log') return `日志 ${c.lines || 0} 行`;
+    return '';
+  }
+
+  /** 开关按钮：家族样式，文案固定「开/关」由 active 类表达状态 */
+  function toggleBtn(id, label, on) {
+    return `<button id="${id}" class="${on ? 'active' : ''}" aria-pressed="${on ? 'true' : 'false'}">${label}</button>`;
+  }
+
+  function groupHtml(key, body) {
+    const g = PANEL_GROUPS.find((x) => x.key === key) || { key, name: key };
+    return `<div class="group" id="fx-group-${key}">
+                <div class="group-head" data-group="${key}" role="button" tabindex="0" aria-expanded="false">
+                    <span class="group-caret">▸</span><span class="group-name">${g.name}</span><span class="group-badge" id="fx-gb-${key}"></span>
+                </div>
+                <div class="group-body">${body}</div>
+            </div>`;
+  }
+
+  function createPanel() {
+    if (panel) return panel;
+    // 幂等：重复注入只保留一个面板
+    if (document.getElementById('csta-panel-host')) return panel;
+
+    const host = document.createElement('div');
+    host.id = 'csta-panel-host';
+    const shadow = host.attachShadow ? host.attachShadow({ mode: 'open' }) : null;
+    const uiRoot = shadow || document;
+
+    if (shadow) {
+      const st = document.createElement('style');
+      st.textContent = PANEL_CSS;
+      shadow.appendChild(st);
+    }
+
+    const el = document.createElement('div');
+    el.id = 'fx-panel';
+    el.innerHTML = `
+      <div class="collapse-title" id="fx-collapse-title">${PANEL_NAME}</div>
+      <div class="panel-title" id="fx-drag-title">
+        <span class="title-dot" id="fx-run-dot"></span>
+        <span>${PANEL_NAME}</span>
+        <span class="title-ver">v${VERSION}</span>
+      </div>
+      <div class="topbar">
+        <button id="fx-primary">开始</button>
+        <button id="fx-submit">交卷</button>
+        <button id="fx-toggle" title="收起 / 展开面板（Alt+H）">收起</button>
+      </div>
+      <div class="fx-content" id="fx-content">
+        <div class="notice" id="fx-notice" role="status" aria-live="polite" tabindex="0" style="display:none;"><span id="fx-notice-text"></span></div>
+
+        ${groupHtml('exam', `
+          <div class="row grid-2">
+            ${toggleBtn('fx-autoanswer', '自动作答', CONFIG.autoAnswer)}
+            ${toggleBtn('fx-autosubmit', '自动交卷', CONFIG.autoSubmit)}
+          </div>
+          <div class="row">
+            <button id="fx-checkupdate">检查更新</button>
+          </div>
+        `)}
+
+        ${groupHtml('play', `
+          <div class="row grid-2">
+            ${toggleBtn('fx-unlock', '解除失焦暂停', CONFIG.unlockBlur)}
+            ${toggleBtn('fx-keep', '意外暂停续播', CONFIG.keepPlaying)}
+            ${toggleBtn('fx-mute', '静音自动播放', CONFIG.muteForAutoplay)}
+          </div>
+        `)}
+
+        ${groupHtml('api', `
+          <div class="row">
+            <button id="fx-settings-btn">AI 设置</button>
+            ${toggleBtn('fx-enableai', 'AI 兜底', CONFIG.enableAI)}
+          </div>
+          <div class="settings" id="fx-settings" style="display:none;">
+            <label class="fld"><i>接口地址</i><input id="fx-f-url" type="text" placeholder="https://api.deepseek.com/v1/chat/completions"></label>
+            <label class="fld"><i>模型</i><input id="fx-f-model" type="text" placeholder="deepseek-chat"></label>
+            <label class="fld"><i>API Key</i><input id="fx-f-key" type="password" placeholder="sk-..."></label>
+            <div class="row">
+              <button id="fx-f-save">保存</button>
+              <button id="fx-f-cancel">取消</button>
+            </div>
+          </div>
+        `)}
+
+        ${groupHtml('bank', `
+          <div class="row grid-2">
+            <button id="fx-export">导出 JSON</button>
+            <button id="fx-export-csv">导出 CSV</button>
+            <button id="fx-import">导入题库</button>
+            <button id="fx-reseed">补全内置</button>
+          </div>
+          <div class="row">
+            <button id="fx-clear-bank">清空题库</button>
+          </div>
+        `)}
+
+        ${groupHtml('log', `
+          <div class="row">
+            <button id="fx-log-clear">清空</button>
+            <button id="fx-log-copy">复制</button>
+            <button id="fx-diag">诊断包</button>
+          </div>
+          <div class="row">
+            <button id="fx-selftest">自检</button>
+          </div>
+        `)}
+
+        <div class="bar"><div class="fill" id="fx-fill"></div></div>
+        <div class="status" id="fx-status">就绪</div>
+        <div class="stats" id="fx-stats"></div>
+        <div class="log-box" id="fx-log"></div>
+      </div>
+    `;
+    (shadow || document.body).appendChild(el);
+    document.body.appendChild(host);
+
+    const $ = (id) => (uiRoot.getElementById ? uiRoot.getElementById(id) : null);
+
+    // ---------------------------------------------------------------- 日志
+    // 与法宣一致：按级别给左边框着色
+    function levelClass(level) {
+      if (level === 'error') return 'log-error';
+      if (level === 'warn') return 'log-warn';
+      if (level === 'ok') return 'log-ok';
+      if (level === 'debug') return 'log-debug';
+      return 'log-info';
+    }
+
+    const api = {
+      pushLog(line, level = 'info') {
+        const box = $('fx-log');
+        if (!box) return;
+        const d = document.createElement('div');
+        d.className = 'log-line ' + levelClass(level);
+        d.textContent = line;
+        box.appendChild(d);
+        while (box.childElementCount > 200) box.removeChild(box.firstChild);
+        box.scrollTop = box.scrollHeight;
+        syncBadges(['log']);
+      },
+      setState(s) {
+        const st = $('fx-status');
+        if (st) {
+          st.textContent = s;
+          st.title = s;
+        }
+        // 状态文案里带「正在作答」时，主按钮同步成「停止」，反之回「开始」。
+        // 光靠 examRunning 不够：状态可能被外部驱动（测试、onload 自动开始），
+        // 那时按钮不跟着变会让人以为点不动。
+        const p = $('fx-primary');
+        if (p) {
+          const running = /正在作答/.test(s);
+          p.textContent = running ? '停止' : '开始';
+          p.classList.toggle('running', running);
+        }
+      },
+      // 圆点三态：idle 绿 / busy 黄 / err 红。与法宣的 on / paused 语义对齐
+      setTone(tone) {
+        const dot = $('fx-run-dot');
+        if (!dot) return;
+        dot.classList.toggle('on', tone === 'idle');
+        dot.classList.toggle('paused', tone === 'busy' || tone === 'err');
+      },
+      setProgress(done, total) {
+        const fill = $('fx-fill');
+        if (!fill) return;
+        const pct = total ? Math.round((done / total) * 100) : 0;
+        fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
+      },
+      refresh() { syncBadges(); syncToggles(); syncTopbar(); },
+      clearLog() {
+        const box = $('fx-log');
+        if (box) box.innerHTML = '';
+        syncBadges(['log']);
+      },
+      logText() {
+        const box = $('fx-log');
+        return box ? Array.from(box.children).map((d) => d.textContent).join('\n') : '';
+      },
+      toggleCollapse() { el.classList.toggle('collapsed'); syncTopbar(); },
+      setSite(label) {
+        const s = $('fx-stats');
+        if (s) s.dataset.site = label;
+      },
+      showNotice(text, kind = 'info') {
+        const n = $('fx-notice');
+        const t = $('fx-notice-text');
+        if (!n || !t) return;
+        t.textContent = text;
+        n.className = 'notice notice-' + kind;
+        n.style.display = 'flex';
+      },
+      hideNotice() {
+        const n = $('fx-notice');
+        if (n) n.style.display = 'none';
+      },
+    };
+
+    // ---------------------------------------------------------------- 摘要
+    function groupCtx(key) {
+      if (key === 'exam') {
+        let parsed = [];
+        try { parsed = parseExam(); } catch (e) { parsed = []; }
+        // 按「整题是否已作答」计，不是数勾选框：多选一题会勾多项，
+        // 直接数 checked 会把 5 题显示成 10/5。
+        const answered = parsed.filter((q) =>
+          q.options.some((o) => o.input && o.input.checked)).length;
+        return {
+          questions: parsed.length,
+          answered,
+          autoSubmit: CONFIG.autoSubmit,
+        };
+      }
+      if (key === 'play') {
+        return {
+          applicable: isPlayerPage(),
+          unlocked: playerGuard.installed && CONFIG.unlockBlur,
+        };
+      }
+      if (key === 'api') return { enabled: CONFIG.enableAI && !!CONFIG.aiUrl, model: CONFIG.aiModel };
+      if (key === 'bank') return { bank: bankCount() };
+      if (key === 'log') {
+        const box = $('fx-log');
+        return { lines: box ? box.childElementCount : 0 };
+      }
+      return {};
+    }
+
+    function syncBadges(only) {
+      PANEL_GROUPS.forEach((g) => {
+        if (only && only.indexOf(g.key) < 0) return;
+        const b = $('fx-gb-' + g.key);
+        if (!b) return;
+        const txt = groupBadge(g.key, groupCtx(g.key));
+        if (b.textContent !== txt) b.textContent = txt;
+      });
+      // 底部统计
+      const st = $('fx-stats');
+      if (st) {
+        const parts = [`题库 ${bankCount()} 条`];
+        if (ACTIVE_SITE && ACTIVE_SITE.label) parts.push(ACTIVE_SITE.label);
+        st.textContent = parts.join(' · ');
+      }
+    }
+
+    // ---------------------------------------------------------------- 折叠
+    const readGroupState = () => normalizeGroupState(store.get('panelGroups', null), PANEL_GROUP_KEYS);
+
+    function applyGroupState(state) {
+      const st = state || readGroupState();
+      PANEL_GROUP_KEYS.forEach((k) => {
+        const g = $('fx-group-' + k);
+        if (!g) return;
+        const open = st[k] === true;
+        g.classList.toggle('open', open);
+        const head = g.querySelector('.group-head');
+        if (head) head.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+    }
+
+    function toggleGroup(key) {
+      const g = $('fx-group-' + key);
+      if (!g) return;
+      const open = !g.classList.contains('open');
+      g.classList.toggle('open', open);
+      const head = g.querySelector('.group-head');
+      if (head) head.setAttribute('aria-expanded', open ? 'true' : 'false');
+      const st = readGroupState();
+      st[key] = open;
+      store.set('panelGroups', st);
+      syncBadges([key]);
+    }
+
+    uiRoot.querySelectorAll('.group-head').forEach((h) => {
+      h.addEventListener('click', () => toggleGroup(h.dataset.group));
+      h.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+          e.preventDefault();
+          toggleGroup(h.dataset.group);
+        }
+      });
+    });
+    applyGroupState();
+
+    // ---------------------------------------------------------------- 开关
+    const TOGGLE_MAP = [
+      ['fx-autoanswer', 'autoAnswer'],
+      ['fx-autosubmit', 'autoSubmit'],
+      ['fx-unlock', 'unlockBlur'],
+      ['fx-keep', 'keepPlaying'],
+      ['fx-mute', 'muteForAutoplay'],
+      ['fx-enableai', 'enableAI'],
+    ];
+    const TOGGLE_LABEL = {
+      autoAnswer: '自动作答', autoSubmit: '自动交卷', unlockBlur: '解除失焦暂停',
+      keepPlaying: '意外暂停续播', muteForAutoplay: '静音自动播放', enableAI: 'AI 兜底',
+    };
+
+    function syncToggles() {
+      TOGGLE_MAP.forEach(([id, key]) => {
+        const b = $(id);
+        if (!b) return;
+        b.classList.toggle('active', !!CONFIG[key]);
+        b.setAttribute('aria-pressed', CONFIG[key] ? 'true' : 'false');
+      });
+      // 主按钮文案随运行态变
+      const p = $('fx-primary');
+      if (p) {
+        p.textContent = examRunning ? '停止' : '开始';
+        p.classList.toggle('running', examRunning);
+      }
+      const en = $('fx-enableai');
+      if (en) en.textContent = `AI 兜底：${CONFIG.enableAI ? '开' : '关'}`;
+    }
+
+    function syncTopbar() {
+      const t = $('fx-toggle');
+      if (t) t.textContent = el.classList.contains('collapsed') ? '展开' : '收起';
+    }
+
+    TOGGLE_MAP.forEach(([id, key]) => {
+      const b = $(id);
+      if (!b) return;
+      b.addEventListener('click', () => {
+        CONFIG[key] = !CONFIG[key];
+        store.set('cfg_' + key, CONFIG[key]);
+        syncToggles();
+        syncBadges([key === 'enableAI' ? 'api' : (key === 'autoAnswer' || key === 'autoSubmit' ? 'exam' : 'play')]);
+        if ((key === 'unlockBlur' || key === 'keepPlaying') && CONFIG[key]) playerGuard.install();
+        if (key === 'unlockBlur' && !CONFIG[key] && playerGuard.installed) {
+          log('已停止拦截失焦；如需完全恢复平台原有的暂停行为，请刷新播放页', 'warn');
+        }
+        log(`${TOGGLE_LABEL[key]}已${CONFIG[key] ? '开启' : '关闭'}`);
+      });
+    });
+
+    // ---------------------------------------------------------------- 主按钮
+    const primary = $('fx-primary');
+    if (primary) {
+      primary.addEventListener('click', async () => {
+        if (examRunning) {
+          examAbort = true;
+          log('已请求停止作答');
+          return;
+        }
+        if (!isExamPage()) {
+          log('当前页面不是试卷页', 'warn');
+          return;
+        }
+        await runExam();
+        api.refresh();
+      });
+    }
+
+    // 交卷
+    const submitBtn = $('fx-submit');
+    if (submitBtn) {
+      submitBtn.addEventListener('click', async () => {
+        if (!confirm('确定交卷？交卷后无法修改本场答案。')) return;
+        api.setState('正在交卷…');
+        const r = await submitExam();
+        log(`交卷结果：${r.msg}`, r.ok ? 'ok' : 'error');
+        if (r.ok) {
+          api.setState('已通过');
+          api.setTone('idle');
+          reconcileAfterPass();
+        } else {
+          api.setState('未通过（' + r.msg + '）');
+          api.setTone('err');
+        }
+        api.refresh();
+      });
+    }
+
+    // 收起
+    const toggleBtnEl = $('fx-toggle');
+    if (toggleBtnEl) toggleBtnEl.addEventListener('click', () => api.toggleCollapse());
+
+    // 提示条可点击关闭
+    const notice = $('fx-notice');
+    if (notice) {
+      notice.addEventListener('click', () => api.hideNotice());
+      notice.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          api.hideNotice();
+        }
+      });
+    }
+
+    // ---------------------------------------------------------------- 检查更新
+    const checkBtn = $('fx-checkupdate');
+    if (checkBtn) {
+      checkBtn.addEventListener('click', async () => {
+        checkBtn.disabled = true;
+        api.setState('正在检查更新…');
+        const r = await checkUpdate();
+        checkBtn.disabled = false;
+        if (r.error) {
+          log('检查更新失败：' + r.error, 'warn');
+          api.setState('检查更新失败');
+        } else if (r.newer) {
+          log(`发现新版本 ${r.remote}（当前 ${VERSION}），点提示条前往下载`, 'ok');
+          api.setState(`有新版本 ${r.remote}`);
+          api.showNotice(`有新版本 ${r.remote}，点击此处打开下载页`, 'info');
+          const n = $('fx-notice');
+          if (n) {
+            n.onclick = () => window.open(
+              'https://github.com/Gnayiel/civil-servant-training-assistant/releases/latest', '_blank');
+          }
+        } else {
+          log(`已是最新版本（${VERSION}）`, 'ok');
+          api.setState('已是最新');
+        }
+      });
+    }
+
+    // ---------------------------------------------------------------- AI 设置
+    const settingsBtn = $('fx-settings-btn');
+    const settingsBox = $('fx-settings');
+    if (settingsBtn && settingsBox) {
+      settingsBtn.addEventListener('click', () => {
+        const show = settingsBox.style.display === 'none';
+        settingsBox.style.display = show ? 'block' : 'none';
+        if (show) {
+          $('fx-f-url').value = CONFIG.aiUrl || '';
+          $('fx-f-model').value = CONFIG.aiModel || '';
+          $('fx-f-key').value = CONFIG.aiKey || '';
+        }
+      });
+    }
+    const saveBtn = $('fx-f-save');
+    if (saveBtn) {
+      saveBtn.addEventListener('click', () => {
+        CONFIG.aiUrl = $('fx-f-url').value.trim();
+        CONFIG.aiModel = $('fx-f-model').value.trim();
+        CONFIG.aiKey = $('fx-f-key').value.trim();
+        store.set('cfg_aiUrl', CONFIG.aiUrl);
+        store.set('cfg_aiModel', CONFIG.aiModel);
+        store.set('cfg_aiKey', CONFIG.aiKey);
+        log(`接口已保存：${CONFIG.aiUrl || '（空）'} / ${CONFIG.aiModel || '（空）'}`, 'ok');
+        settingsBox.style.display = 'none';
+        api.refresh();
+      });
+    }
+    const cancelBtn = $('fx-f-cancel');
+    if (cancelBtn) cancelBtn.addEventListener('click', () => { settingsBox.style.display = 'none'; });
+
+    // ---------------------------------------------------------------- 题库
+    const on = (id, fn) => {
+      const b = $(id);
+      if (b) b.addEventListener('click', fn);
+    };
+    on('fx-export', () => exportJson());
+    on('fx-export-csv', () => exportCsv());
+    on('fx-import', async () => {
+      try {
+        const txt = await navigator.clipboard.readText();
+        if (!txt) {
+          log('剪贴板为空：请先把题库 JSON 或 CSV 复制到剪贴板', 'warn');
+          return;
+        }
+        const r = importData(txt);
+        log(`导入：${r.msg}`, r.ok ? 'ok' : 'error');
+        api.refresh();
+      } catch (e) {
+        log('读取剪贴板失败（浏览器可能拒绝授权）：' + e.message, 'error');
+      }
+    });
+    on('fx-reseed', () => {
+      const n = mergeSeed();
+      log(n ? `补全内置题库 ${n} 条` : '内置题库已齐，无需补全', 'ok');
+      api.refresh();
+    });
+    on('fx-clear-bank', () => {
+      if (!confirm('清空全部题库？此操作不可撤销。')) return;
+      bankClearedAt = Date.now();
+      store.set('bankClearedAt', bankClearedAt);
+      bankCache = {};
+      store.set('bank', {});
+      store.set('seeded', false);
+      log('题库已清空（可点「补全内置」恢复）', 'ok');
+      api.refresh();
+    });
+
+    // ---------------------------------------------------------------- 日志组
+    on('fx-log-clear', () => api.clearLog());
+    on('fx-log-copy', async () => {
+      try {
+        await navigator.clipboard.writeText(api.logText());
+        log('日志已复制', 'ok');
+      } catch (e) {
+        log('复制失败，请手动选择', 'warn');
+      }
+    });
+    on('fx-diag', () => exportDiagnostics());
+    on('fx-selftest', () => {
+      const r = EXPORTS.selfTest();
+      log(`自检：${r.total} 项，失败 ${r.failed}`, r.failed ? 'error' : 'ok');
+      api.setState(r.failed ? `自检 ${r.failed} 项失败` : `自检 ${r.total} 项全过`);
+    });
+
+    // ---------------------------------------------------------------- 拖拽
+    function makeDraggable(handle) {
+      if (!handle) return;
+      let dragging = false;
+      let ox = 0;
+      let oy = 0;
+      handle.addEventListener('mousedown', (e) => {
+        if (e.target.closest('button')) return;
+        dragging = true;
+        const r = el.getBoundingClientRect();
+        ox = e.clientX - r.left;
+        oy = e.clientY - r.top;
+        el.style.right = 'auto';
+        e.preventDefault();
+      });
+      window.addEventListener('mousemove', (e) => {
+        if (!dragging) return;
+        el.style.left = Math.max(0, e.clientX - ox) + 'px';
+        el.style.top = Math.max(0, e.clientY - oy) + 'px';
+      });
+      window.addEventListener('mouseup', () => {
+        if (!dragging) return;
+        dragging = false;
+        const r = el.getBoundingClientRect();
+        store.set('panelPos', { left: r.left, top: r.top });
+      });
+    }
+    makeDraggable($('fx-drag-title'));
+    makeDraggable($('fx-collapse-title'));
+
+    // 恢复位置
+    const pos = store.get('panelPos', null);
+    if (pos && typeof pos.left === 'number') {
+      el.style.left = pos.left + 'px';
+      el.style.top = pos.top + 'px';
+      el.style.right = 'auto';
+    }
+
+    panel = api;
+    syncToggles();
+    applyGroupState();
+    syncBadges();
+    api.setState('就绪');
+    api.setTone('idle');
+    return api;
+  }
+
+  // ==================== 检查更新 ====================
+  /**
+   * 手动检查更新。
+   *
+   * 油猴自带的「检查脚本更新」只在脚本从 URL 安装、且 @updateURL 可达时才会生效；
+   * 从本地粘贴安装的用户根本不会收到提示。而且 jsDelivr 对分支有 12 小时缓存，
+   * 即使自动检查跑到了，也可能拿到旧版本。
+   *
+   * 这里手动拉 @updateURL 并加时间戳参数绕过 CDN 缓存，比对 @version。
+   * 只做提示，不自动安装——替换脚本是油猴的职责，越权改自身会被安全策略拦。
+   */
+  function parseVersion(v) {
+    const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(v || '').trim());
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  }
+
+  function versionNewer(remote, local) {
+    const a = parseVersion(remote);
+    const b = parseVersion(local);
+    if (!a || !b) return false;
+    for (let i = 0; i < 3; i++) {
+      if (a[i] !== b[i]) return a[i] > b[i];
+    }
+    return false;
+  }
+
+  async function checkUpdate() {
+    const url = (typeof GM_info !== 'undefined' && GM_info.script
+      && (GM_info.script.updateURL || GM_info.script.downloadURL)) || '';
+    // GM_info 没给出时退回脚本头里的固定地址
+    const target = url || 'https://fastly.jsdelivr.net/gh/Gnayiel/'
+      + 'civil-servant-training-assistant@main/civil-servant-training-assistant.user.js';
+
+    try {
+      // 加 ?t= 让 CDN 视为新资源，绕过 12 小时分支缓存
+      const bust = target + (target.indexOf('?') < 0 ? '?' : '&') + 't=' + Date.now();
+      const text = await new Promise((resolve, reject) => {
+        if (typeof GM_xmlhttpRequest !== 'function') {
+          reject(new Error('当前环境不支持 GM_xmlhttpRequest'));
+          return;
+        }
+        GM_xmlhttpRequest({
+          method: 'GET',
+          url: bust,
+          timeout: 15000,
+          onload: (r) => (r.status >= 200 && r.status < 300
+            ? resolve(r.responseText)
+            : reject(new Error('HTTP ' + r.status))),
+          onerror: () => reject(new Error('网络错误')),
+          ontimeout: () => reject(new Error('请求超时')),
+        });
+      });
+
+      const m = /^\/\/\s*@version\s+(\S+)/m.exec(text);
+      if (!m) return { error: '远端脚本里没有 @version' };
+      const remote = m[1];
+      return { remote, local: VERSION, newer: versionNewer(remote, VERSION) };
+    } catch (e) {
+      return { error: e.message };
     }
   }
 
@@ -1796,14 +2165,19 @@
     }
 
     if (isPlayerPage()) {
-      panel.setState('播放页 · 已接管');
       playerGuard.install();
+      // install 之后再刷一次：面板在 createPanel 末尾已渲染过一次 badge，
+      // 那时还没 install，「播放」分类会显示成「未接管」，与实际不符。
+      panel.refresh();
+      panel.setState('播放页 · 已接管');
+      panel.setTone('idle');
       return;
     }
 
     if (isExamPage()) {
       const qs = parseExam();
       panel.setState(`试卷页 · ${qs.length} 题`);
+      panel.setProgress(0, qs.length);
       log(`检测到试卷，共 ${qs.length} 道题`);
       hookSubmitAlert();
       if (CONFIG.autoAnswer) {
@@ -1832,6 +2206,8 @@
     mergeSeed,
     bankToCsv,
     importData,
+    versionNewer,
+    parseVersion,
     setPanelState: (s) => { if (panel && panel.setState) panel.setState(s); },
     resolveSite,
     SITES,
@@ -1875,6 +2251,15 @@
       eq('空值不抛错', resolveSite(''), null);
       eq('每个省份都配了域名与选择器',
         SITES.every((x) => x.hosts.length > 0 && x.sel && x.label), true);
+
+      // 版本比较（检查更新用）
+      eq('1.2.0 比 1.1.0 新', versionNewer('1.2.0', '1.1.0'), true);
+      eq('1.1.0 不比 1.2.0 新', versionNewer('1.1.0', '1.2.0'), false);
+      eq('同版本不算新', versionNewer('1.2.0', '1.2.0'), false);
+      eq('主版本优先于次版本', versionNewer('2.0.0', '1.99.99'), true);
+      eq('补丁位有效', versionNewer('1.1.10', '1.1.9'), true);
+      eq('带 v 前缀也认', versionNewer('v1.3.0', '1.2.0'), true);
+      eq('非法版本不抛错', versionNewer('abc', '1.2.0'), false);
 
       // 诊断包日志脱敏
       eq('遮蔽 URL 里的 token',
