@@ -290,6 +290,11 @@ setTimeout(function () {
     });
     r.csvHeader = csvLines[0];
     r.csvRows = csvLines.length - 1;
+    // 快照必须在「清空」之前取：清之后库就空了，比对会变成 0 题
+    var bankSnap = JSON.parse(localStorage.getItem('gwx_bank') || '{}');
+    r.csvAnswerSnapshot = Object.keys(bankSnap).map(function (k) {
+      return [k, (bankSnap[k].a || []).join('\u0001')];
+    });
     // 清空后重新导入
     var h4 = document.getElementById('csta-panel-host');
     var sr4 = h4 && h4.shadowRoot;
@@ -298,6 +303,7 @@ setTimeout(function () {
     var res = t.importData(csv);
     r.importMsg = res && res.msg;
     var bank2 = JSON.parse(localStorage.getItem('gwx_bank') || '{}');
+    r.__bankAfter = JSON.stringify(bank2);
     var keys = Object.keys(bank2);
     r.importedCount = keys.length;
     // 抽查：答案列不能是「内置/交卷验证」这类来源词
@@ -401,6 +407,16 @@ ok('CSV 重新导入条数一致', exam.importedCount === exam.bankBefore,
   `${exam.importedCount}/${exam.bankBefore}`);
 ok('导入没有把「答案来源」当成答案',
   exam.importedBadSource === 0, `${exam.importedBadSource} 条异常`);
+ok('CSV 往返后每道题的答案一字不差（中文标点不能被当成分隔符）',
+  (function () {
+    var before = exam.csvAnswerSnapshot || [];
+    if (!before.length) return false;
+    var after = JSON.parse(exam.__bankAfter || '{}');
+    return before.every(function (pair) {
+      var e = after[pair[0]];
+      return e && (e.a || []).join('\u0001') === pair[1];
+    });
+  })(), `${(exam.csvAnswerSnapshot || []).length} 题比对`);
 ok('导入后答案内容正确',
   JSON.stringify(exam.importedAnswer) === JSON.stringify(['人民日益增长的美好生活需要和不平衡不充分的发展之间的矛盾']),
   JSON.stringify(exam.importedAnswer));

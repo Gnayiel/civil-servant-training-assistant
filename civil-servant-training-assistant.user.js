@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.3.5
+// @version      1.3.6
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
@@ -33,7 +33,7 @@
 
   // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
   // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.5';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.6';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';
@@ -2461,6 +2461,10 @@
         // 排除「答案来源」这类含「答案」但装的不是答案的列
         const idxA = header.findIndex((h) => /答案|answer/i.test(h) && !/来源|出处|source/i.test(h));
         const idxT = header.findIndex((h) => /题型|type/i.test(h));
+        // 是不是脚本自己导出的格式：只有我们的导出会带「答案来源」这一列。
+        // 这个判断决定了答案怎么切分（见下面 answers 的注释），
+        // 单靠「有没有 | 」不够 —— 单选答案本来就不含分隔符，会被宽松规则拆碎。
+        const isOwnFormat = header.some((h) => /答案来源|出处|source/i.test(h));
         const start = idxQ >= 0 ? 1 : 0;
         for (let i = start; i < rows.length; i++) {
           const r = rows[i];
@@ -2469,8 +2473,21 @@
           const ty = (idxT >= 0 ? r[idxT] : r[0]) || '';
           if (!String(q).trim()) continue;
           const type = /多选/.test(ty) ? 'multi' : (/判断/.test(ty) ? 'judge' : 'single');
-          // 只按明确的分隔符切分：英文答案里的空格不应被当成多选分隔
-          const answers = String(a).split(/[|;；、,，]+/).map((x) => x.trim()).filter(Boolean);
+          // 切分答案。中文标点必然会把答案拆碎，所以两档规则严格分开：
+          //
+          //   自己导出的 CSV → 只认 " | "（导出时就是用这个分隔多答案）。
+          //     单选答案不含 " | "，于是整条保留 —— 「最基本、最深层、最持久」
+          //     是一条答案，不是三条。
+          //   其它来源的 CSV（手编、别处拿到的）→ 才退回宽松分隔符，
+          //     兼容「答案写成 A、B、C」这类习惯写法。
+          //
+          // 混用一套规则的后果实测过：442 条里 35 条答案被拆碎（7.9%），
+          // 拆碎后数量与页面选项对不上，题库静默失效、退化成联网查询。
+          const cell = String(a);
+          const answers = (isOwnFormat
+            ? cell.split(' | ')
+            : cell.split(/[|;；、,，]+/))
+            .map((x) => x.trim()).filter(Boolean);
           saveEntry(q, type, answers, [], { src: 'import' });
           added++;
         }
@@ -2680,6 +2697,30 @@
           #fx-panel .log-box { max-height: 24vh; }
       }
   `;
+
+  /**
+   * 把面板位置夹回可视区。
+   *
+   * 位置会存进 GM 存储、下次打开照原样恢复。一旦存了视口外的坐标
+   * （在大屏上拖到右下角、之后换小屏或缩小窗口），面板就整个跑到屏幕外，
+   * 刷新也回不来 —— 用户会以为插件坏了，实际只能手动清存储。
+   * 拖拽过程中和恢复位置时都要夹一次。
+   */
+  function clampPanelPos(x, y, w, h) {
+    const vw = (typeof window !== 'undefined' && window.innerWidth) || 1024;
+    const vh = (typeof window !== 'undefined' && window.innerHeight) || 768;
+    const pw = Math.max(80, w || 300);
+    const ph = Math.max(40, h || 200);
+    // 至少留 120×40 在视口内，保证标题栏（拖拽手柄）一定抓得到
+    const minVisibleX = 120;
+    const minVisibleY = 40;
+    const maxX = Math.max(0, vw - minVisibleX);
+    const maxY = Math.max(0, vh - minVisibleY);
+    return {
+      x: Math.min(Math.max(0, x), maxX),
+      y: Math.min(Math.max(0, y), maxY),
+    };
+  }
 
   /** 折叠状态归一化：只认已知分类，坏数据一律当收起 */
   function normalizeGroupState(raw, keys) {
@@ -3546,26 +3587,43 @@
       });
       window.addEventListener('mousemove', (e) => {
         if (!dragging) return;
-        el.style.left = Math.max(0, e.clientX - ox) + 'px';
-        el.style.top = Math.max(0, e.clientY - oy) + 'px';
+        const p = clampPanelPos(e.clientX - ox, e.clientY - oy, el.offsetWidth, el.offsetHeight);
+        el.style.left = p.x + 'px';
+        el.style.top = p.y + 'px';
       });
       window.addEventListener('mouseup', () => {
         if (!dragging) return;
         dragging = false;
         const r = el.getBoundingClientRect();
-        store.set('panelPos', { left: r.left, top: r.top });
+        // 存夹过的坐标：存原始值的话，屏幕上看着还在，换台小屏就找不回来了
+        const p = clampPanelPos(r.left, r.top, el.offsetWidth, el.offsetHeight);
+        store.set('panelPos', { left: p.x, top: p.y });
       });
     }
     makeDraggable($('fx-drag-title'));
     makeDraggable($('fx-collapse-title'));
 
-    // 恢复位置
+    // 恢复位置：必须夹回可视区。存的是绝对坐标，换到更小的屏幕时
+    // 原样恢复会让面板整个跑到视口外，且刷新也救不回来。
     const pos = store.get('panelPos', null);
-    if (pos && typeof pos.left === 'number') {
-      el.style.left = pos.left + 'px';
-      el.style.top = pos.top + 'px';
+    if (pos && typeof pos.left === 'number' && typeof pos.top === 'number') {
+      const p = clampPanelPos(pos.left, pos.top, el.offsetWidth, el.offsetHeight);
+      el.style.left = p.x + 'px';
+      el.style.top = p.y + 'px';
       el.style.right = 'auto';
+      // 夹过就顺手把纠正后的值写回去，免得每次打开都再纠正一遍
+      if (p.x !== pos.left || p.y !== pos.top) store.set('panelPos', { left: p.x, top: p.y }, true);
     }
+
+    // 窗口缩小也要夹：原来在外面的大屏位置，缩到笔记本屏幕后就出界了
+    window.addEventListener('resize', () => {
+      if (!el.style.left) return;   // 还在默认 right 定位，不用管
+      const r = el.getBoundingClientRect();
+      const p = clampPanelPos(r.left, r.top, el.offsetWidth, el.offsetHeight);
+      el.style.left = p.x + 'px';
+      el.style.top = p.y + 'px';
+      store.set('panelPos', { left: p.x, top: p.y }, true);
+    });
 
     panel = api;
     syncToggles();
@@ -3894,6 +3952,7 @@
     noteSourceResult,
     sourceBlocked,
     resetSourceBreaker,
+    clampPanelPos,
     extractAnswer,
     normalizeAnswer,
     mergeCandidates,
@@ -4100,6 +4159,17 @@
       for (let i = 0; i < 5; i++) cacheStore(cm2, 'k' + i, { letters: 'A', conf: 1 }, i, 3);
       eq('缓存：超上限按先进先出淘汰', cm2.size, 3);
       eq('缓存：最旧的键被淘汰', cm2.has('k0'), false);
+
+      // ---------- 面板位置夹取 ----------
+      // clampPanelPos 依赖 window.innerWidth；Node 沙箱里没有 window，走兜底 1024×768。
+      // 这里只验「越界一定被夹回」这个不变量，不依赖具体视口尺寸。
+      const inside = clampPanelPos(100, 100);
+      eq('位置：正常坐标不被改动', inside.x === 100 && inside.y === 100, true);
+      const far = clampPanelPos(99999, 99999);
+      eq('位置：屏幕外坐标被夹回（x）', far.x < 99999, true);
+      eq('位置：屏幕外坐标被夹回（y）', far.y < 99999, true);
+      eq('位置：坐标不会为负', clampPanelPos(-500, -500).x === 0, true);
+      eq('位置：仍留出可抓取区（x ≥ 0）', far.x >= 0, true);
 
       // ---------- 来源熔断 ----------
       resetSourceBreaker();
