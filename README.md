@@ -50,10 +50,18 @@
 ## 安装
 
 1. 浏览器安装 [Tampermonkey](https://www.tampermonkey.net/)（Violentmonkey 亦可）
-2. 打开油猴面板 → 添加新脚本 → 粘贴 [`civil-servant-training-assistant.user.js`](civil-servant-training-assistant.user.js) 全文 → 保存
+2. 二选一装脚本：
+   - **直接下载**（推荐）：[`v1.1.0 附件`](https://github.com/Gnayiel/civil-servant-training-assistant/releases/latest/download/civil-servant-training-assistant.user.js) — 拖进浏览器窗口即可
+   - **手动粘贴**：打开油猴面板 → 添加新脚本 → 粘贴 [`civil-servant-training-assistant.user.js`](civil-servant-training-assistant.user.js) 全文
 3. 登录培训网站，页面右下角出现「公务员网络培训助手」面板即生效
 
 脚本声明了 `@noframes` 与顶层窗口判定，不会在 iframe 里重复注入。域名不在适配表里且页面看不出是培训平台时，脚本静默退出，不打扰。
+
+### 关于自动更新
+
+脚本的 `@updateURL` 指向 jsDelivr 而不是 `raw.githubusercontent.com`，因为后者在中国大陆经常不可达——用它做更新地址时油猴的版本检查会静默失败，永远收不到新版本。
+
+代价是 jsDelivr 对分支有 12 小时缓存，**新版本最多延迟 12 小时才提示**。想立刻升级就从上面的 Release 链接重装一次。
 
 ## 使用
 

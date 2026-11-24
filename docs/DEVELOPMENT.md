@@ -104,11 +104,20 @@ node tools/ci.mjs --strict                  # 要求必须有浏览器
 | 通道 | 国内可达 | 缓存 |
 | --- | --- | --- |
 | `raw.githubusercontent.com` | 经常不可达 | 无 |
-| `cdn.jsdelivr.net` | 可达 | `@main` 约数小时 |
-| Release 附件（`github.com/.../releases/download/...`） | 多数可达 | 无 |
+| `cdn.jsdelivr.net` `@main` | 可达 | **12 小时** |
+| `cdn.jsdelivr.net` `@latest` / 版本范围 | 可达 | **7 天**（更差，不要用） |
+| `cdn.jsdelivr.net` 精确 tag / commit | 可达 | **永久**（不要用于 updateURL） |
+| Release 附件 | 多数可达 | 无 |
 
-代价是 jsdelivr 的 `@main` 有数小时缓存，发版后不会立刻被感知到。对培训类脚本
-（一学期更新一两次）没有影响。要立即生效可让用户手动重装 Release 附件。
+据 jsDelivr 官方文档，缓存时长按引用类型区分：分支 12 小时、版本别名（含 `latest`）
+7 天、精确版本与 commit hash 永久。所以 **`@main` 已经是"能自动更新"里最快的通道**，
+换成 `@latest` 只会更慢。
+
+代价是发版后最多 12 小时才被用户的油猴感知到。对培训类脚本（一学期更新一两次）没有影响；
+需要立即生效时，让用户从 Release 附件手动重装。
+
+`purge.jsdelivr.net` 的清理接口对分支类型不可靠（官方文档称 purge 主要面向
+version-aliased，且需邮件申请），不要把它写进发布流程。
 
 `tests/selftest.mjs` 有一条断言专门拦这个：`@updateURL` 里出现
 `raw.githubusercontent.com` 就失败。
