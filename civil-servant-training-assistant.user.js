@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.3.6
+// @version      1.3.7
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
@@ -33,7 +33,7 @@
 
   // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
   // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.6';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.7';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';
@@ -109,6 +109,18 @@
   // 快档只用于确有把握的卷子；慢档给页面反应慢的机器留余量。
   const SPEED_NAME = { slow: '慢速', normal: '标准', fast: '快速' };
   const SPEED_DELAY = { slow: 1200, normal: 500, fast: 150 };
+
+  /**
+   * 实际生效的题间间隔（纯函数，自检可断言）。
+   *
+   * 真正的等待是 `max(档位值, answerDelayMs)` —— 有个 220ms 的下限防止填得太快
+   * 把页面事件打乱。所以「快速」档配置的 150ms 实际跑的是 220ms。
+   * 面板文案必须显示生效值，否则用户按日志里的数字去掐时间会一直对不上。
+   */
+  function effectiveDelay(speed, floor) {
+    const base = SPEED_DELAY[speed] !== undefined ? SPEED_DELAY[speed] : SPEED_DELAY.normal;
+    return Math.max(base, Number(floor) || 0);
+  }
 
   // ==================== 站点适配层 ====================
   /**
@@ -198,7 +210,15 @@
     return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
   }
 
+  /**
+   * level='debug' 的行受「调试」开关控制。
+   *
+   * 把关放在这里而不是只靠调用方用 dbg()：通道明细是散在查询链里发的
+   * `log(x, 'debug')`，只要有一处忘记走 dbg()，「调试」开关就变成了假的
+   * ——面板上写着「调试：关」，明细照样一行行刷。集中在这里判，新增调用点也不会漏。
+   */
   function log(msg, level = 'info') {
+    if (level === 'debug' && !CONFIG.debug) return;
     const line = `[${ts()}] ${msg}`;
     logBuf.push({ t: Date.now(), level, line });
     if (logBuf.length > LOG_MAX) logBuf.shift();
@@ -1915,12 +1935,20 @@
     panel.refresh();
 
     // 填空/问答等题型本脚本不处理，页面若有就禁用自动交卷，避免交白卷
-    const blankInputs = document.querySelectorAll(
-      '.shiti textarea, .shiti input[type="text"]').length;
+    // 用适配层的表单选择器，而不是硬编码 .shiti：
+    // 新增省份时外层容器的类名很可能不同（SEL 就是为此存在的），
+    // 硬编码会让「填空/问答题型」检测静默失效 —— 那等于允许自动交卷交白卷。
+    // 表单里的 textarea / input[type=text] 只会是作答框（隐藏域是 type=hidden）。
+    // 两段选择器的结果可能重叠（同一元素被两边都选中），用 Set 去重
+    const blankSeen = new Set();
+    document.querySelectorAll(
+      `${SEL.examForm} textarea, ${SEL.examForm} input[type="text"], `
+      + '.shiti textarea, .shiti input[type="text"]').forEach((el) => blankSeen.add(el));
+    const blankCount = blankSeen.size;
     const boxTotal = document.querySelectorAll(SEL.optionBox).length;
-    const unsupported = blankInputs > 0 || boxTotal > questions.length;
+    const unsupported = blankCount > 0 || boxTotal > questions.length;
     if (unsupported) {
-      log(`页面有 ${boxTotal} 个作答区、${blankInputs} 个文本作答框，` +
+      log(`页面有 ${boxTotal} 个作答区、${blankCount} 个文本作答框，` +
         `只解析出 ${questions.length} 题；存在不支持的题型，已禁用自动交卷`, 'warn');
     }
 
@@ -1978,7 +2006,7 @@
           log(`第 ${q.qid} 题回读不一致（期望 ${r.want.join(',')}，实际 ${r.actual.join(',')}）`, 'warn');
         }
         // 节奏档位决定题间间隔；再叠加一个很小的下限，避免连续填答把页面事件打乱
-        await sleep(Math.max(SPEED_DELAY[CONFIG.speed] || SPEED_DELAY.normal, CONFIG.answerDelayMs));
+        await sleep(effectiveDelay(CONFIG.speed, CONFIG.answerDelayMs));
         panel.setProgress(done, questions.length);
         panel.refresh();
       }
@@ -3252,7 +3280,8 @@
       store.set('cfg_speed', CONFIG.speed);
       syncToggles();
       syncBadges(['mode']);
-      log(`节奏已切换为「${SPEED_NAME[CONFIG.speed]}」（题间 ${SPEED_DELAY[CONFIG.speed]} ms）`);
+      log(`节奏已切换为「${SPEED_NAME[CONFIG.speed]}」`
+        + `（题间 ${effectiveDelay(CONFIG.speed, CONFIG.answerDelayMs)} ms）`);
     });
 
     on('fx-submit', () => {
@@ -3953,6 +3982,7 @@
     sourceBlocked,
     resetSourceBreaker,
     clampPanelPos,
+    effectiveDelay,
     extractAnswer,
     normalizeAnswer,
     mergeCandidates,
@@ -4159,6 +4189,14 @@
       for (let i = 0; i < 5; i++) cacheStore(cm2, 'k' + i, { letters: 'A', conf: 1 }, i, 3);
       eq('缓存：超上限按先进先出淘汰', cm2.size, 3);
       eq('缓存：最旧的键被淘汰', cm2.has('k0'), false);
+
+      // ---------- 节奏档位的生效值 ----------
+      // 下限 220ms 会盖掉「快速」档配置的 150ms，面板文案必须显示生效值
+      eq('节奏：慢速取档位值', effectiveDelay('slow', 220), 1200);
+      eq('节奏：标准取档位值', effectiveDelay('normal', 220), 500);
+      eq('节奏：快速被下限抬到 220', effectiveDelay('fast', 220), 220);
+      eq('节奏：未知档位回退标准', effectiveDelay('bogus', 220), 500);
+      eq('节奏：下限为 0 时用档位原值', effectiveDelay('fast', 0), 150);
 
       // ---------- 面板位置夹取 ----------
       // clampPanelPos 依赖 window.innerWidth；Node 沙箱里没有 window，走兜底 1024×768。

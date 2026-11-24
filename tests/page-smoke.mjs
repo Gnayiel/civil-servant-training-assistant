@@ -195,6 +195,10 @@ setTimeout(function () {
     r.groupCount = host.shadowRoot.querySelectorAll('.group').length;
     r.hasProgress = !!host.shadowRoot.querySelector('#fx-fill');
     r.hasLogBox = !!host.shadowRoot.querySelector('.log-box');
+    // 「调试」默认关，此时面板里不该出现任何 debug 级别的行。
+    // 通道明细是散在查询链里发的，曾经有一处漏了走 dbg()，开关就成了摆设。
+    r.debugLines = host.shadowRoot.querySelectorAll('#fx-log .log-line.log-debug').length;
+    r.debugBtn = (host.shadowRoot.querySelector('#fx-debug') || {}).textContent;
   }
   // 诊断包结构（脱敏细节由 Node 自检精确覆盖，这里不看正则）
   guard('diag', function () {
@@ -364,6 +368,9 @@ ok('面板内没有勾选框', exam.checkboxes === 0, String(exam.checkboxes));
 ok('面板有 5 个分类组（与法宣同一结构）', exam.groupCount === 5, String(exam.groupCount));
 ok('面板有进度条', exam.hasProgress === true);
 ok('面板有日志框', exam.hasLogBox === true);
+ok('「调试」默认关时面板里没有 debug 明细行',
+  exam.debugLines === 0 && exam.debugBtn === '调试：关',
+  `${exam.debugBtn} / ${exam.debugLines} 行`);
 ok('版本徽章带 v 前缀', /^v\S+$/.test(exam.verBadge || ''), String(exam.verBadge));
 ok('面板标题为「公务员网络培训助手」', exam.title === '公务员网络培训助手', String(exam.title));
 ok('底部统计第一行是题库与存储占用',
