@@ -79,14 +79,19 @@ console.log('\n[2/4] 清空墓碑');
   const disk = { a: entry('甲'), b: entry('乙') };
   const local = { c: entry('丙') };
   // clearedAt 晚于所有条目的 ts/us → 全部视为已删除
-  ok('清空后旧条目全部被墓碑挡住', Object.keys(hook.mergeBanks(disk, local, T)).length === 0);
+  ok('清空后旧条目全部被墓碑挡住', Object.keys(hook.mergeBanks(disk, local, T + 1)).length === 0);
 
   // 清空之后新建的条目（us 更大）应当保留
   const afterClear = { n: entry('新题', T + 100, T + 100) };
   const merged = hook.mergeBanks({}, afterClear, T);
   ok('清空后新建的条目保留', Object.keys(merged).join(',') === 'n');
   ok('清空后旧条目 + 新条目：只留新的',
-    Object.keys(hook.mergeBanks(disk, afterClear, T)).join(',') === 'n');
+    Object.keys(hook.mergeBanks(disk, afterClear, T + 1)).join(',') === 'n');
+
+  // 边界：与清空同一毫秒创建的条目不能被误杀。
+  // 用户清空题库后立刻点「补全内置」时，blankEntry 的 ts 就落在这个毫秒上。
+  ok('与清空同一毫秒的条目不被误杀',
+    Object.keys(hook.mergeBanks({ n: entry('同毫秒', T, T) }, {}, T)).join(',') === 'n');
 }
 
 console.log('\n[3/4] 边界与脏数据');

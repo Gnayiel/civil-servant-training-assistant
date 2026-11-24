@@ -59,8 +59,7 @@
               "ts": { "type": "integer", "description": "首次入库时间戳（毫秒）" },
               "us": { "type": "integer", "description": "最近使用时间戳（毫秒）" },
               "hit": { "type": "integer", "minimum": 0, "description": "命中次数" },
-              "ok": { "type": "integer", "minimum": 0, "description": "验证答对次数" },
-              "bad": { "type": "integer", "minimum": 0, "description": "答错次数" }
+              "ok": { "type": "integer", "minimum": 0, "description": "交卷通过后被标记为已验证的次数" }
             }
           }
         }

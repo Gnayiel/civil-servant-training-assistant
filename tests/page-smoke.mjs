@@ -66,6 +66,10 @@ window.GM_getValue = function (k, d) {
 window.GM_setValue = function (k, v) { localStorage.setItem(k, JSON.stringify(v)); };
 window.GM_xmlhttpRequest = function () { throw new Error('冒烟测试不应联网'); };
 window.GM_info = { script: { version: 'test' } };
+// 无头浏览器里 alert 会阻塞渲染直到有人点确定，--dump-dom 会一直挂着。
+// 脚本的 hookSubmitAlert 会保留原始 alert 并在最后调用它，所以必须在脚本加载前就把它换成空函数。
+window.alert = function (msg) { (window.__alerts = window.__alerts || []).push(String(msg)); };
+window.confirm = function () { return true; };
 window.__pageErrors = [];
 window.addEventListener('error', function (e) { if (e && e.message) window.__pageErrors.push(String(e.message)); }, true);
 </script>`;
@@ -111,7 +115,14 @@ function run(html, budgetMs, fakePath = '') {
 console.log('\n[1/2] 试卷页：解析与填答');
 const examProbe = `
 setTimeout(function () {
-  var r = { at: Date.now() };
+  var r = { at: Date.now(), steps: [] };
+  var step = function (name) { r.steps.push(name); };
+  // 把每一段包进 try/catch：单独一段失败不应该让整个探针没输出，
+  // 否则只能看到「探针未执行」，定位成本极高。
+  var guard = function (name, fn) {
+    try { fn(); r.steps.push(name + ':ok'); }
+    catch (e) { r.steps.push(name + ':ERR ' + (e && e.message)); }
+  };
   var host = document.getElementById('csta-panel-host');
   r.panel = !!host;
   r.shadow = !!(host && host.shadowRoot);
@@ -157,7 +168,7 @@ setTimeout(function () {
     r.title = host.shadowRoot.querySelector('.hd b').textContent;
   }
   // 诊断包结构（脱敏细节由 Node 自检精确覆盖，这里不看正则）
-  (function () {
+  guard('diag', function () {
     var d = window.__GWX_TEST__.buildDiagnostics();
     r.diagFormat = d.format;
     r.diagPageType = d.page.type;
@@ -166,7 +177,99 @@ setTimeout(function () {
     r.diagSelectors = Object.keys(d.selectors || {}).length;
     r.diagBank = d.counts.bank;
     r.diagHasKeyFlag = typeof d.config.hasKey === 'boolean';
-  })();
+  });
+  // 对账必须写回「页面上实际选中的答案」，而不是脚本作答时的快照。
+  // 复现：脚本填完 → 用户手改第 1 题 → 交卷通过 → 题库里应是改后的答案。
+  guard('reconcile', function () {
+    var t = window.__GWX_TEST__;
+    var qs = t.parseExam();
+    if (!qs.length) { r.reconcile = 'no-questions'; return; }
+    // 先把第 1 题改成 D（脚本原本填 C）
+    var q0 = qs[0];
+    q0.options.forEach(function (o) { if (o.input.checked) o.input.click(); });
+    var d = q0.options.filter(function (o) { return o.letter === 'D'; })[0];
+    if (d && !d.input.checked) d.input.click();
+    r.afterManualChange = q0.options.filter(function (o) {
+      return o.input && o.input.checked;
+    }).map(function (o) { return o.letter; });
+    // 触发对账
+    window.alert('您已通过本次考试！');
+    // 读回题库里第 1 题存的答案
+    var bank = JSON.parse(localStorage.getItem('gwx_bank') || '{}');
+    var key = t.fpKey(q0.stem);
+    var entry = bank[key];
+    r.reconciledAnswer = entry ? entry.a : null;
+    r.reconciledOk = entry ? entry.ok : 0;
+  });
+
+  // 面板主按钮在作答中应变成「停止作答」，停止后能再次开始
+  guard('btnFlow', function () {
+    var host2 = document.getElementById('csta-panel-host');
+    var sr = host2 && host2.shadowRoot;
+    if (!sr) { r.btnFlow = 'no-panel'; return; }
+    var btn = sr.querySelector('[data-act="answer"]');
+    r.btnTextIdle = btn ? btn.textContent : null;
+    // 借 setState 驱动按钮文案（与 runExam 内部用的是同一个入口）
+    window.__GWX_TEST__.setPanelState && window.__GWX_TEST__.setPanelState('正在作答…');
+    r.btnTextRunning = btn ? btn.textContent : null;
+    r.btnHasStopClass = btn ? btn.classList.contains('stop') : null;
+    window.__GWX_TEST__.setPanelState && window.__GWX_TEST__.setPanelState('作答 5/5');
+    r.btnTextAfter = btn ? btn.textContent : null;
+  });
+
+  // 模拟「脚本升级带来新题」：内置题库变化时 mergeSeed 应把缺失的补回来。
+  // 注意不能直接改 localStorage 来模拟——内存里还有 bankCache，那样测的是缓存而非逻辑。
+  guard('seed', function () {
+    var t = window.__GWX_TEST__;
+    r.seedSig = t.seedSignature();
+    r.seedSigStable = (t.seedSignature() === r.seedSig);
+    r.bankBefore = Object.keys(JSON.parse(localStorage.getItem('gwx_bank') || '{}')).length;
+    // 题库已齐时补全应返回 0（幂等）
+    r.mergeWhenFull = t.mergeSeed();
+    // 先经面板「清空题库」清掉内存缓存与存储，再补全
+    var h3 = document.getElementById('csta-panel-host');
+    var sr3 = h3 && h3.shadowRoot;
+    var clr = sr3 && sr3.querySelector('[data-act="clearBank"]');
+    if (clr) clr.click();
+    r.afterClear = Object.keys(JSON.parse(localStorage.getItem('gwx_bank') || '{}')).length;
+    r.refilledCount = t.mergeSeed();
+    r.afterRefill = Object.keys(JSON.parse(localStorage.getItem('gwx_bank') || '{}')).length;
+  });
+
+  // CSV 往返：导出后再导入，答案不能丢，也不能把「答案来源」当成答案读进来
+  guard('csv', function () {
+    var t = window.__GWX_TEST__;
+    var csv = t.bankToCsv();
+    // 注意：探针本身在模板字符串里，任何转义序列都会被解析成真实字符。
+    // 所以这里不写转义，直接用 fromCharCode 取换行符。
+    var LF = String.fromCharCode(10);
+    var CR = String.fromCharCode(13);
+    var csvLines = csv.split(LF).map(function (x) {
+      return x.charAt(x.length - 1) === CR ? x.slice(0, -1) : x;
+    });
+    r.csvHeader = csvLines[0];
+    r.csvRows = csvLines.length - 1;
+    // 清空后重新导入
+    var h4 = document.getElementById('csta-panel-host');
+    var sr4 = h4 && h4.shadowRoot;
+    var clr2 = sr4 && sr4.querySelector('[data-act="clearBank"]');
+    if (clr2) clr2.click();
+    var res = t.importData(csv);
+    r.importMsg = res && res.msg;
+    var bank2 = JSON.parse(localStorage.getItem('gwx_bank') || '{}');
+    var keys = Object.keys(bank2);
+    r.importedCount = keys.length;
+    // 抽查：答案列不能是「内置/交卷验证」这类来源词
+    var badSrc = keys.filter(function (k) {
+      var a = bank2[k].a || [];
+      return a.some(function (x) { return /^(内置|导入|交卷验证|手改)$/.test(x); });
+    });
+    r.importedBadSource = badSrc.length;
+    // 抽查一条原题答案是否保住
+    var probe = bank2[t.fpKey('新时代我国社会主要矛盾是（ ）。')];
+    r.importedAnswer = probe ? probe.a : null;
+  });
+
   r.selfTest = window.__GWX_TEST__.selfTest();
   r.errors = window.__pageErrors;
   document.getElementById('__r').textContent = JSON.stringify(r);
@@ -222,6 +325,33 @@ ok('诊断包 URL 不含查询串', exam.diagUrlHasQuery === false);
 ok('诊断包记录了适配层命中数', exam.diagSelectors > 5, String(exam.diagSelectors));
 ok('诊断包记录了题库条数', exam.diagBank > 400, String(exam.diagBank));
 ok('诊断包用布尔位表示是否配了 Key（不落明文）', exam.diagHasKeyFlag === true);
+ok('手改第 1 题为 D 后，DOM 确实是 D',
+  JSON.stringify(exam.afterManualChange) === JSON.stringify(['D']),
+  JSON.stringify(exam.afterManualChange));
+ok('对账写回的是改后的答案（不是脚本快照的 C）',
+  JSON.stringify(exam.reconciledAnswer) === JSON.stringify(['文化建设']),
+  JSON.stringify(exam.reconciledAnswer));
+ok('对账把 ok 计为 1', exam.reconciledOk === 1, String(exam.reconciledOk));
+ok('主按钮初始文案为「开始作答」', exam.btnTextIdle === '开始作答', String(exam.btnTextIdle));
+ok('作答中主按钮变为「停止作答」', exam.btnTextRunning === '停止作答', String(exam.btnTextRunning));
+ok('停止态带 stop 样式类', exam.btnHasStopClass === true);
+ok('作答结束后按钮回到「开始作答」', exam.btnTextAfter === '开始作答', String(exam.btnTextAfter));
+ok('种子指纹稳定', exam.seedSigStable === true, String(exam.seedSig));
+ok('题库已齐时 mergeSeed 幂等（返回 0）', exam.mergeWhenFull === 0,
+  String(exam.mergeWhenFull));
+ok('清空题库后确实为空', exam.afterClear === 0, String(exam.afterClear));
+ok('清空后 mergeSeed 能补回全部内置题（模拟脚本升级带新题）',
+  exam.refilledCount > 400 && exam.afterRefill === exam.bankBefore,
+  `补回 ${exam.refilledCount} 条，落盘 ${exam.afterRefill} 条，原 ${exam.bankBefore} 条`);
+ok('CSV 表头是新的真实列', /答案来源/.test(exam.csvHeader || ''), exam.csvHeader);
+ok('CSV 行数与题库一致', exam.csvRows === exam.bankBefore, `${exam.csvRows}/${exam.bankBefore}`);
+ok('CSV 重新导入条数一致', exam.importedCount === exam.bankBefore,
+  `${exam.importedCount}/${exam.bankBefore}`);
+ok('导入没有把「答案来源」当成答案',
+  exam.importedBadSource === 0, `${exam.importedBadSource} 条异常`);
+ok('导入后答案内容正确',
+  JSON.stringify(exam.importedAnswer) === JSON.stringify(['人民日益增长的美好生活需要和不平衡不充分的发展之间的矛盾']),
+  JSON.stringify(exam.importedAnswer));
 ok('面板显示已作答 5/5', /5\/5/.test(exam.state || ''), exam.state);
 ok('面板显示题库条数', /\d+ 条/.test(exam.bankCnt || ''), exam.bankCnt);
 ok('面板识别出试卷题型', /5 题/.test(exam.examCnt || ''), exam.examCnt);
@@ -247,6 +377,31 @@ setTimeout(function () {
     var st = host.shadowRoot.querySelector('[data-el="state"]');
     r.state = st ? st.textContent : null;
   }
+  // 验证拦截器本身是否生效：用一个独立注册的 blur 监听当探针。
+  // 平台的 onblur 在安装时已被摘掉，所以不能拿它当判据。
+  var probeHits = 0;
+  window.addEventListener('blur', function () { probeHits += 1; });
+  var sr2 = host && host.shadowRoot;
+  var tg = sr2 && sr2.querySelector('[data-opt="unlockBlur"]');
+  if (tg) {
+    // 开关默认是「开」：拦截器应吃掉这次 blur，探针收不到
+    probeHits = 0;
+    window.dispatchEvent(new Event('blur'));
+    r.probeOnBlocked = (probeHits === 0);
+
+    // 关掉开关后不���拦截，探针应收到
+    tg.click();
+    probeHits = 0;
+    window.dispatchEvent(new Event('blur'));
+    r.probeOffPassed = (probeHits === 1);
+
+    // 再打开，恢复拦截
+    tg.click();
+    probeHits = 0;
+    window.dispatchEvent(new Event('blur'));
+    r.probeOnAgain = (probeHits === 0);
+  }
+
   r.errors = window.__pageErrors;
   document.getElementById('__r').textContent = JSON.stringify(r);
 }, 2500);
@@ -261,6 +416,10 @@ ok('派发 blur 后平台 handler 零次触发', player.afterDispatch === player
 ok('事后注册的 blur 监听同样被拦截', player.lateFired === 0, String(player.lateFired));
 ok('面板在播放页可用', player.panel);
 ok('面板显示已接管播放器', /已接管/.test(player.playCnt || ''), player.playCnt);
+ok('开关打开时拦截器生效（探针监听收不到 blur）', player.probeOnBlocked === true);
+ok('关掉开关后拦截器放行（探针监听收到 blur）', player.probeOffPassed === true,
+  String(player.probeOffPassed));
+ok('重新打开开关又恢复拦截', player.probeOnAgain === true);
 
 rmSync(TMP, { recursive: true, force: true });
 console.log(failed ? `\n合计 ${failed} 项失败\n` : '\n页面冒烟全部通过\n');

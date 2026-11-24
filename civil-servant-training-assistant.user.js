@@ -254,10 +254,14 @@
     return Number(store.get('bankClearedAt', 0)) || 0;
   }
 
-  // 清空墓碑：早于清空时刻创建、且在清空后从未被使用过的条目视为已删除
+  // 清空墓碑：**严格早于**清空时刻创建、且在清空后从未被使用过的条目视为已删除。
+  //
+  // 必须用严格小于。用 <= 时，清空后在同一毫秒补入的条目（blankEntry 的 ts 就是 Date.now()）
+  // 会被自己的清空墓碑挡掉：面板显示「已补全 442 条」，落盘却是 0 条，
+  // 用户清空题库后立刻点「补全内置」就会遇到。
   function tombstoned(e, clearedAt) {
     if (!clearedAt) return false;
-    return (e.ts || 0) <= clearedAt && (e.us || 0) <= clearedAt;
+    return (e.ts || 0) < clearedAt && (e.us || 0) < clearedAt;
   }
 
   /**
@@ -288,7 +292,34 @@
     return merged;
   }
 
+  /**
+   * 批量写入：处在 batch 里时 bankFlush 只置脏标记，退出时统一落盘一次。
+   *
+   * 没有这个的话，导入 442 条 CSV 会触发 442 次「全量读盘 → 合并 → 全量写盘」，
+   * 每次都是 O(n) 的 JSON 序列化，合计 O(n²)。GM_setValue 在真实浏览器里是同步 IPC，
+   * 表现就是点「导入」后页面卡住十几秒。
+   */
+  let batchDepth = 0;
+  let bankDirty = false;
+
+  function batchWrite(fn) {
+    batchDepth++;
+    try {
+      return fn();
+    } finally {
+      batchDepth--;
+      if (batchDepth === 0 && bankDirty) {
+        bankDirty = false;
+        bankFlush();
+      }
+    }
+  }
+
   function bankFlush() {
+    if (batchDepth > 0) {
+      bankDirty = true;
+      return;
+    }
     let out = null;
     for (let attempt = 0; attempt < 3; attempt++) {
       const clearedAt = Math.max(bankClearedAt, readClearedAt());
@@ -302,32 +333,42 @@
     bankCache = out || {};
   }
 
-  // 首次运行导入内置题库；已有数据则只在题库为空时补
+  /**
+   * 内置题库的指纹：条数 + 首末题干。
+   *
+   * 只存一个「已导入过」的布尔值是不够的——脚本升级带来新题时，
+   * 老用户会永远拿不到（他们不会想到去点「补全内置」）。
+   * 记指纹才能在题库变化时自动补一次。
+   */
+  function seedSignature() {
+    const n = SEED_RAW.length;
+    if (!n) return '0';
+    return `${n}:${fpKey(SEED_RAW[0][1])}:${fpKey(SEED_RAW[n - 1][1])}`;
+  }
+
+  // 首次运行导入内置题库；脚本升级导致内置题库变化时，自动补上新增的题。
+  // mergeSeed 只补缺失条目，不覆盖已有答案（包括用户手改），所以重复执行安全。
   function seedBank() {
-    if (store.get('seeded', false)) return;
-    if (Object.keys(bank()).length > 0) {
-      store.set('seeded', true);
-      return;
-    }
-    let n = 0;
-    SEED_RAW.forEach(([t, q, a, l]) => {
-      if (!q) return;
-      const e = blankEntry(q, t);
-      e.a = (a || []).slice();
-      e.l = (l || []).slice();
-      e.src = 'seed';
-      e.hit = 0;
-      bank()[fpKey(q)] = e;
-      n++;
-    });
-    bankFlush();
+    const sig = seedSignature();
+    if (store.get('seedSig', '') === sig) return;
+    const n = mergeSeed();
+    store.set('seedSig', sig);
     store.set('seeded', true);
-    console.log('[' + TAG + '] 已导入内置题库 ' + n + ' 条');
+    if (n) {
+      log(`内置题库已补充 ${n} 条（共 ${bankCount()} 条）`);
+      console.log('[' + TAG + '] 内置题库已补充 ' + n + ' 条');
+    }
   }
 
   // 把内置题库里「本地缺失」的条目补回去，不动已有条目与统计
   function mergeSeed() {
+    return batchWrite(() => mergeSeedInner());
+  }
+
+  function mergeSeedInner() {
     let n = 0;
+    // 补入的条目时间戳必须晚于清空时刻，否则刚补的会被墓碑当作「清空前的旧数据」过滤掉
+    const stamp = Math.max(Date.now(), (bankClearedAt || 0) + 1);
     SEED_RAW.forEach(([t, q, a, l]) => {
       if (!q) return;
       const key = fpKey(q);
@@ -336,6 +377,8 @@
       e.a = (a || []).slice();
       e.l = (l || []).slice();
       e.src = 'seed';
+      e.ts = stamp;
+      e.us = stamp;
       bank()[key] = e;
       n++;
     });
@@ -404,7 +447,6 @@
       us: Date.now(),
       hit: 0,
       ok: 0,
-      bad: 0,
     };
   }
 
@@ -428,16 +470,6 @@
     b[key] = entry;
     bankFlush();
     return entry;
-  }
-
-  function markWrong(stem) {
-    const b = bank();
-    const key = fpKey(stem);
-    const e = b[key];
-    if (e) {
-      e.bad = (e.bad || 0) + 1;
-      bankFlush();
-    }
   }
 
   // ==================== 考试页解析 ====================
@@ -740,7 +772,12 @@
   let examAbort = false;
 
   async function runExam() {
-    if (examRunning) return;
+    if (examRunning) {
+      // 再次点击 = 中止当前作答（面板按钮在运行中会显示为「停止」）
+      examAbort = true;
+      log('已请求停止作答');
+      return;
+    }
     const questions = parseExam();
     if (!questions.length) {
       log('未解析到题目，可能不是试卷页');
@@ -769,80 +806,144 @@
     let unknown = 0;
     const unknownList = [];
 
-    for (const q of questions) {
+    try {
+      for (const q of questions) {
+        if (examAbort) {
+          log('已中止作答');
+          break;
+        }
+        const decided = await decide(q);
+        if (!decided) {
+          unknown++;
+          unknownList.push(q);
+          log(`第 ${q.qid} 题无可用答案，跳过`, 'warn');
+          continue;
+        }
+        const r = applyAnswer(q, decided.picked);
+        if (r.matched) {
+          done++;
+          log(`第 ${q.qid} 题作答（${decided.source}）：${r.want.join(',')}`);
+        } else {
+          unknown++;
+          unknownList.push(q);
+          log(`第 ${q.qid} 题回读不一致（期望 ${r.want.join(',')}，实际 ${r.actual.join(',')}）`, 'warn');
+        }
+        await sleep(CONFIG.answerDelayMs);
+      }
+
+      panel.setState(`作答 ${done}/${questions.length}`);
+      panel.setTone(unknown ? 'busy' : 'idle');
+      log(`作答完成：${done} 题已填，${unknown} 题未定`);
+
+      // 记录本次作答，交卷后用于对账
+      store.set('lastExam', {
+        at: Date.now(),
+        url: location.href,
+        items: questions.map((q) => ({
+          qid: q.qid,
+          stem: q.stem,
+          type: q.type,
+          picked: q.options.filter((o) => o.input && o.input.checked).map((o) => o.text),
+          pickedLetters: q.options.filter((o) => o.input && o.input.checked).map((o) => o.letter),
+        })),
+        unknown: unknownList.map((q) => q.stem),
+      });
+
       if (examAbort) {
-        log('已中止作答');
-        break;
+        panel.setState(`已停止（${done}/${questions.length} 题已填）`);
+        panel.setTone('busy');
+        return;
       }
-      const decided = await decide(q);
-      if (!decided) {
-        unknown++;
-        unknownList.push(q);
-        log(`第 ${q.qid} 题无可用答案，跳过`, 'warn');
-        continue;
+
+      if (CONFIG.autoSubmit && unknown === 0 && unsupported) {
+        log('存在未处理的题型，已跳过自动交卷，请人工检查后提交', 'warn');
+      } else if (CONFIG.autoSubmit && unknown === 0) {
+        log('自动交卷已开启，正在提交…');
+        const r = await submitExam();
+        log(`交卷结果：${r.msg}`);
+        if (r.ok) {
+          panel.setState('考试通过');
+          panel.setTone('idle');
+          // 通过后必须对账，否则开着自动交卷的人题库永远不增长
+          reconcileAfterPass();
+        } else {
+          panel.setState('未通过，可重考');
+          panel.setTone('err');
+        }
+      } else if (unknown > 0) {
+        log('存在未定题，未自动交卷，请手动核对后提交', 'warn');
       }
-      const r = applyAnswer(q, decided.picked);
-      if (r.matched) {
-        done++;
-        log(`第 ${q.qid} 题作答（${decided.source}）：${r.want.join(',')}`);
-      } else {
-        unknown++;
-        unknownList.push(q);
-        log(`第 ${q.qid} 题回读不一致（期望 ${r.want.join(',')}，实际 ${r.actual.join(',')}）`, 'warn');
-      }
-      await sleep(CONFIG.answerDelayMs);
+    } catch (e) {
+      // 任何一步抛错都要让状态可恢复：否则 examRunning 永久为 true，
+      // 用户再也点不动「开始作答」，只能刷新页面。
+      log('作答过程中出错：' + (e && e.message ? e.message : String(e)), 'error');
+      panel.setState('出错，可重试');
+      panel.setTone('err');
+    } finally {
+      examRunning = false;
+      examAbort = false;
     }
-
-    panel.setState(`作答 ${done}/${questions.length}`);
-    panel.setTone(unknown ? 'busy' : 'idle');
-    log(`作答完成：${done} 题已填，${unknown} 题未定`);
-
-    // 记录本次作答，交卷后用于对账
-    store.set('lastExam', {
-      at: Date.now(),
-      url: location.href,
-      items: questions.map((q) => ({
-        qid: q.qid,
-        stem: q.stem,
-        type: q.type,
-        options: q.options.map((o) => ({ l: o.letter, t: o.text })),
-        picked: q.options.filter((o) => o.input && o.input.checked).map((o) => o.text),
-        pickedLetters: q.options.filter((o) => o.input && o.input.checked).map((o) => o.letter),
-      })),
-      unknown: unknownList.map((q) => q.stem),
-    });
-
-    if (CONFIG.autoSubmit && unknown === 0 && unsupported) {
-      log('存在未处理的题型，已跳过自动交卷，请人工检查后提交', 'warn');
-    } else if (CONFIG.autoSubmit && unknown === 0) {
-      log('自动交卷已开启，正在提交…');
-      const r = await submitExam();
-      log(`交卷结果：${r.msg}`);
-      if (r.ok) panel.setState('考试通过');
-      else panel.setState('未通过，可重考');
-    } else if (unknown > 0) {
-      log('存在未定题，未自动交卷，请手动核对后提交', 'warn');
-    }
-    examRunning = false;
   }
 
   // ==================== 成绩对账 ====================
-  // 交卷后平台只给"通过/未通过"，不给逐题判定；
-  // 因此只在通过时把本场全部答案记为已验证。
-  function reconcileAfterPass() {
-    const last = store.get('lastExam', null);
-    if (!last) return;
-    let n = 0;
-    last.items.forEach((it) => {
-      if (it.picked && it.picked.length) {
-        saveEntry(it.stem, it.type, it.picked, it.pickedLetters, {
-          verified: true, src: 'exam',
-        });
-        n++;
+  /**
+   * 收集「本次实际提交的答案」。
+   *
+   * 必须优先读 DOM，不能直接用 runExam 结束时存下的 lastExam 快照：
+   * 用户很可能在脚本作答之后手动改了几题再交卷，而快照里还是脚本当时填的值。
+   * 拿快照对账会把**用户改对的那题**写回旧答案，还标成「已验证」，
+   * 等于用一个错误答案污染题库，比不记录更糟。
+   *
+   * DOM 读不到时（页面已跳走、或被 alert 钩子从别的上下文触发）才回退到快照。
+   */
+  function collectSubmittedAnswers() {
+    // 优先：当前页面的实际选中状态
+    try {
+      const live = parseExam();
+      if (live.length) {
+        const items = live
+          .map((q) => ({
+            stem: q.stem,
+            type: q.type,
+            picked: q.options.filter((o) => o.input && o.input.checked).map((o) => o.text),
+            pickedLetters: q.options.filter((o) => o.input && o.input.checked).map((o) => o.letter),
+          }))
+          .filter((it) => it.picked.length);
+        if (items.length) return { items, from: 'dom' };
       }
+    } catch (e) {
+      log('读取页面实际答案失败，回退到本场快照：' + e.message, 'warn');
+    }
+
+    // 回退：runExam 存的快照
+    const last = store.get('lastExam', null);
+    if (last && Array.isArray(last.items)) {
+      return {
+        items: last.items.filter((it) => it.picked && it.picked.length),
+        from: 'snapshot',
+      };
+    }
+    return null;
+  }
+
+  // 交卷后平台只给"通过/未通过"，不给逐题判定；因此只在通过时把本场全部答案记为已验证。
+  function reconcileAfterPass() {
+    const got = collectSubmittedAnswers();
+    if (!got || !got.items.length) {
+      log('没有可对账的作答记录（可能已交卷或页面已跳转）', 'warn');
+      store.set('lastExam', null);
+      return;
+    }
+    let n = 0;
+    got.items.forEach((it) => {
+      saveEntry(it.stem, it.type, it.picked, it.pickedLetters, {
+        verified: true, src: 'exam',
+      });
+      n++;
     });
     store.set('lastExam', null);
-    log(`本场全部答对，已把 ${n} 条答案标记为已验证`);
+    const from = got.from === 'dom' ? '页面实际选项' : '本场快照';
+    log(`本场通过，已把 ${n} 条答案标记为已验证（来源：${from}）`);
   }
 
   // 平台在交卷后只弹一句「您已通过本次考试！」/「您本次考试未通过！」，
@@ -889,11 +990,15 @@
         try {
           window.onblur = null;
         } catch (e) { /* 忽略 */ }
-        // 拦截后续通过 addEventListener 注册的 blur（捕获阶段先吃掉）
+        // 拦截后续通过 addEventListener 注册的 blur（捕获阶段先吃掉）。
+        // 必须每次检查 CONFIG.unlockBlur：监听器装上就拿不下来，
+        // 不在里面判断的话，用户关掉开关会「看起来关了实际还在拦」。
         window.addEventListener('blur', (ev) => {
+          if (!CONFIG.unlockBlur) return;
           ev.stopImmediatePropagation();
         }, true);
         document.addEventListener('visibilitychange', (ev) => {
+          if (!CONFIG.unlockBlur) return;
           if (document.hidden) ev.stopImmediatePropagation();
         }, true);
         log('已解除失焦暂停（窗口切换不再中断播放）');
@@ -1066,6 +1171,8 @@
       .btn.pri:hover { background: #376df0; }
       .btn.ghost { background: transparent; }
       .btn.danger { background: #3a2326; border-color: #5d3338; color: #e8a3a3; }
+      .btn.stop { background: #7a3a2a; border-color: #a04a35; color: #ffe2d8; }
+      .btn.stop:hover { background: #8d4331; }
       .btn.danger:hover { background: #4a2a2e; border-color: #77414a; }
       .btn:disabled { opacity: .45; cursor: not-allowed; }
       .acts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 4px 0 8px; }
@@ -1186,6 +1293,13 @@
       setState(s) {
         stateEl.textContent = s;
         stateEl.title = s;
+        // 作答进行中时，主按钮变成「停止作答」，避免用户以为点了没反应
+        const ansBtn = root.querySelector('[data-act="answer"]');
+        if (ansBtn) {
+          const running = /正在作答/.test(s);
+          ansBtn.textContent = running ? '停止作答' : '开始作答';
+          ansBtn.classList.toggle('stop', running);
+        }
       },
       // 顶部状态点：idle 绿 / busy 黄 / err 红
       setTone(tone) {
@@ -1235,6 +1349,11 @@
         store.set('cfg_' + k, CONFIG[k]);
         syncToggles();
         if ((k === 'unlockBlur' || k === 'keepPlaying') && CONFIG[k]) playerGuard.install();
+        // 关闭解锁时，页面原本注册的 onblur 已在安装时被清空，无法还原；
+        // 这里只保证 blur 监听不再拦截，并说明需刷新才能完全回到平台原行为。
+        if (k === 'unlockBlur' && !CONFIG[k] && playerGuard.installed) {
+          log('已停止拦截失焦；如需完全恢复平台原有的暂停行为，请刷新播放页', 'warn');
+        }
         log(`${labelOf(k)}已${CONFIG[k] ? '开启' : '关闭'}`);
       });
     });
@@ -1331,6 +1450,8 @@
         bankCache = {};
         store.set('bank', {});
         store.set('seeded', false);
+        // seedSig 故意保留：清空后不该在下次打开页面时又自动灌回 442 条，
+        // 恢复必须由用户点「补全内置」触发。
         log('题库已清空（可点「补全内置」恢复）');
         api.refresh();
         return;
@@ -1441,20 +1562,37 @@
     return '"' + s.replace(/"/g, '""') + '"';
   }
 
-  function exportCsv() {
-    const rows = [['题型', '题目', '正确答案', '错误次数', '命中次数'].map(csvCell).join(',')];
-    const b = bank();
-    Object.values(b).forEach((e) => {
+  // 来源标签：让使用者一眼看出这条答案是内置的、导入的，还是交卷验证过的
+  const SRC_TEXT = {
+    seed: '内置',
+    import: '导入',
+    exam: '交卷验证',
+    user: '手改',
+  };
+
+  // CSV 行拼装：既给导出用，也让测试能在不触发下载的情况下验证格式。
+  // 列全部是真数据——早期版本有一列「错误次数」，但它恒为 0
+  // （平台不给逐题对错，脚本无从知道哪题错），留着只会误导，已替换为「答案来源」与「验证通过次数」。
+  function bankToCsv() {
+    const rows = [['题型', '题目', '正确答案', '答案来源', '验证通过次数', '命中次数']
+      .map(csvCell).join(',')];
+    Object.values(bank()).forEach((e) => {
       rows.push([
         TYPE_TEXT[e.t] || e.t || '',
         e.q || '',
         (e.a || []).join(' | '),
-        e.bad || 0,
+        SRC_TEXT[e.src] || e.src || '',
+        e.ok || 0,
         e.hit || 0,
       ].map(csvCell).join(','));
     });
-    downloadFile(`gwypx-bank-${stamp()}.csv`, '\ufeff' + rows.join('\r\n'), 'text/csv');
-    log(`已导出 CSV ${rows.length - 1} 条`);
+    return '\ufeff' + rows.join('\r\n');
+  }
+
+  function exportCsv() {
+    const csv = bankToCsv();
+    downloadFile(`gwypx-bank-${stamp()}.csv`, csv, 'text/csv');
+    log(`已导出 CSV ${bankCount()} 条`);
   }
 
   // 极简 CSV 解析（支持引号包裹与双引号转义）
@@ -1481,6 +1619,10 @@
   }
 
   function importData(text) {
+    return batchWrite(() => importDataInner(text));
+  }
+
+  function importDataInner(text) {
     if (!text || !text.trim()) return { ok: false, msg: '内容为空' };
     const t = text.trim();
     let added = 0;
@@ -1498,7 +1640,9 @@
         const rows = parseCsv(t);
         const header = rows[0] || [];
         const idxQ = header.findIndex((h) => /题目|题干|question/i.test(h));
-        const idxA = header.findIndex((h) => /答案|answer/i.test(h));
+        // 排除「答案来源」这类含「答案」但装的不是答案的列。
+        // 不排除的话，一旦导出列顺序变化，「来源」会被当成正确答案读进去。
+        const idxA = header.findIndex((h) => /答案|answer/i.test(h) && !/来源|出处|source/i.test(h));
         const idxT = header.findIndex((h) => /题型|type/i.test(h));
         const start = idxQ >= 0 ? 1 : 0;
         for (let i = start; i < rows.length; i++) {
@@ -1683,6 +1827,12 @@
     applyAnswer,
     mergeBanks,
     buildDiagnostics,
+    seedBank,
+    seedSignature,
+    mergeSeed,
+    bankToCsv,
+    importData,
+    setPanelState: (s) => { if (panel && panel.setState) panel.setState(s); },
     resolveSite,
     SITES,
     scrubLine,
@@ -1708,9 +1858,13 @@
         mergeBanks({ k: { q: 'x', us: 5 } }, { k: { q: 'y', us: 9 } }, 0).k.q, 'y');
       eq('同题冲突时盘上更新则不覆盖',
         mergeBanks({ k: { q: 'x', us: 9 } }, { k: { q: 'y', us: 5 } }, 0).k.q, 'x');
-      eq('清空墓碑挡住旧条目', Object.keys(mergeBanks(A, B, t)).length, 0);
+      eq('清空墓碑挡住清空前的条目', Object.keys(mergeBanks(A, B, t + 1)).length, 0);
       eq('清空后新建的条目仍保留',
         Object.keys(mergeBanks({}, { n: { q: 'N', ts: t + 1, us: t + 1 } }, t)), ['n']);
+      // 边界：清空后在同一毫秒补入的条目不能被自己的墓碑误杀
+      // （用户清空题库后立刻点「补全内置」就是这种时序）
+      eq('与清空同一毫秒的条目不被误杀',
+        Object.keys(mergeBanks({ n: { q: 'N', ts: t, us: t } }, {}, t)), ['n']);
 
       // 多省份域名解析
       eq('识别甘肃域名', (resolveSite('gwypx.gsdj.gov.cn') || {}).id, 'gansu');
