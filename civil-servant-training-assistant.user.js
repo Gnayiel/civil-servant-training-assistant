@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.3.7
+// @version      1.3.8
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
@@ -33,7 +33,7 @@
 
   // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
   // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.7';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.8';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';
@@ -2267,6 +2267,17 @@
   const playerGuard = {
     installed: false,
     pausedByUs: 0,
+    /**
+     * 这两个标记都是「只装一次」的守卫。
+     *
+     * applyLive() 每次拨开关都会重放 watchVideo()，而它里面有两处副作用：
+     * 给 document 挂 click 监听、以及（找不到 video 时）起一个轮询。
+     * 没有守卫时每拨一次「开启」就多挂一个监听、多起一个轮询 ——
+     * 实测拨 6 次（3 次开启）多出 3 个 click 监听，且没有任何上限。
+     * 播放器上的 pause 监听本来就有 dataset 标记守着，只有这两处漏了。
+     */
+    clickBound: false,
+    pollTimer: null,
 
     install() {
       if (this.installed) return;
@@ -2344,19 +2355,27 @@
         if (panel && panel.refresh) panel.refresh();
         return true;
       };
-      if (!attach()) {
+      if (!attach() && !this.pollTimer) {
+        // 单例轮询：已经有一个在等 video 出现就不再另起一个
         let tries = 0;
-        const t = setInterval(() => {
-          if (attach() || ++tries > 40) clearInterval(t);
+        this.pollTimer = setInterval(() => {
+          if (attach() || ++tries > 40) {
+            clearInterval(this.pollTimer);
+            this.pollTimer = null;
+          }
         }, 500);
       }
-      // 记录用户主动操作控制条的时刻，避免与「自动恢复」互相打架
-      document.addEventListener('click', (ev) => {
-        const t = ev.target;
-        if (t && t.closest && t.closest('.jw-controlbar, .jw-icon-playback, video')) {
-          playerGuard.lastManualAt = Date.now();
-        }
-      }, true);
+      // 记录用户主动操作控制条的时刻，避免与「自动恢复」互相打架。
+      // 只装一次：applyLive() 会反复调到这里，重复挂监听纯属泄漏。
+      if (!this.clickBound) {
+        this.clickBound = true;
+        document.addEventListener('click', (ev) => {
+          const t = ev.target;
+          if (t && t.closest && t.closest('.jw-controlbar, .jw-icon-playback, video')) {
+            playerGuard.lastManualAt = Date.now();
+          }
+        }, true);
+      }
     },
   };
 

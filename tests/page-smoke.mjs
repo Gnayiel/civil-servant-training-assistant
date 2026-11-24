@@ -81,6 +81,15 @@ window.GM_xmlhttpRequest = function (o) {
   throw new Error('冒烟测试不应联网');
 };
 window.GM_info = { script: { version: '__VERSION__' } };
+// 统计 document 上的 click 监听数量：守「反复拨开关不累积监听」这条回归
+window.__docClickCount = 0;
+(function () {
+  var raw = document.addEventListener.bind(document);
+  document.addEventListener = function (type, fn, opt) {
+    if (type === 'click') window.__docClickCount++;
+    return raw(type, fn, opt);
+  };
+}());
 // 无头浏览器里 alert 会阻塞渲染直到有人点确定，--dump-dom 会一直挂着。
 // 脚本的 hookSubmitAlert 会保留原始 alert 并在最后调用它，所以必须在脚本加载前就把它换成空函数。
 window.alert = function (msg) { (window.__alerts = window.__alerts || []).push(String(msg)); };
@@ -477,6 +486,16 @@ setTimeout(function () {
     r.probeOnAgain = (probeHits === 0);
   }
 
+  // 反复拨「意外暂停续播」不应累积 document 监听。
+  // applyLive() 每次拨动都会重放 watchVideo()，而它里面挂 document click 监听 ——
+  // 没有守卫时每拨一次「开启」就多挂一个，且没有上限（实测拨 6 次多 3 个）。
+  r.clickListenersAdded = (function () {
+    var before = window.__docClickCount || 0;
+    var keep = sr2 && sr2.querySelector('#fx-keep');
+    if (keep) { for (var i = 0; i < 6; i++) keep.click(); }
+    return (window.__docClickCount || 0) - before;
+  })();
+
   // 静音开关：默认开 → 脚本把 video 静音；关掉后必须把声音还回去。
   // install() 只在首次执行，所以这一步实际在验 applyLive() 有没有跑。
   var muteBtn = sr2 && sr2.querySelector('#fx-mute');
@@ -507,6 +526,8 @@ ok('开关打开时拦截器生效（探针监听收不到 blur）', player.prob
 ok('关掉开关后拦截器放行（探针监听收到 blur）', player.probeOffPassed === true,
   String(player.probeOffPassed));
 ok('重新打开开关又恢复拦截', player.probeOnAgain === true);
+ok('反复拨播放开关不会累积 document 监听',
+  player.clickListenersAdded === 0, `新增 ${player.clickListenersAdded} 个`);
 ok('静音开关默认生效', player.mutedDefault === true, String(player.mutedDefault));
 ok('关掉静音后声音恢复（applyLive 真的在跑）', player.mutedAfterOff === false,
   String(player.mutedAfterOff));
