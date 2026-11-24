@@ -445,6 +445,18 @@ setTimeout(function () {
     r.probeOnAgain = (probeHits === 0);
   }
 
+  // 静音开关：默认开 → 脚本把 video 静音；关掉后必须把声音还回去。
+  // install() 只在首次执行，所以这一步实际在验 applyLive() 有没有跑。
+  var muteBtn = sr2 && sr2.querySelector('#fx-mute');
+  var vid = document.querySelector('video');
+  if (muteBtn && vid) {
+    r.mutedDefault = vid.muted;          // 应为 true（fixture 带 muted 属性 + 脚本也设了）
+    muteBtn.click();                     // 关掉静音
+    r.mutedAfterOff = vid.muted;          // 应为 false
+    muteBtn.click();                     // 再打开
+    r.mutedAfterOn = vid.muted;           // 应为 true
+  }
+
   r.errors = window.__pageErrors;
   document.getElementById('__r').textContent = JSON.stringify(r);
 }, 2500);
@@ -463,6 +475,10 @@ ok('开关打开时拦截器生效（探针监听收不到 blur）', player.prob
 ok('关掉开关后拦截器放行（探针监听收到 blur）', player.probeOffPassed === true,
   String(player.probeOffPassed));
 ok('重新打开开关又恢复拦截', player.probeOnAgain === true);
+ok('静音开关默认生效', player.mutedDefault === true, String(player.mutedDefault));
+ok('关掉静音后声音恢复（applyLive 真的在跑）', player.mutedAfterOff === false,
+  String(player.mutedAfterOff));
+ok('重新打开静音又静音', player.mutedAfterOn === true, String(player.mutedAfterOn));
 
 // ------------------------------------------------- 检查更新：多源合并取较高版本
 console.log('\n[3/3] 检查更新：CDN 滞后时仍能发现新版本');

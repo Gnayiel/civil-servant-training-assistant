@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.3.0
+// @version      1.3.1
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
@@ -33,7 +33,7 @@
 
   // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
   // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.1';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';
@@ -68,6 +68,16 @@
     baiduMinChars: 400,        // 抓到的正文短于此值就换下一个搜索入口
     baiduConfFactor: 0.9,      // 百度把握度折减系数（搜索页回显容易虚高）
     maxResponseChars: 300000,  // 单页正文上限，防止超大页面拖慢解析
+    // 重试：只对「可能自愈」的失败（网络/超时/5xx）重试。百度反爬敏感，
+    // 默认只重试一次的代价是偶发超时能救回来，又不至于把请求数翻几倍。
+    maxRetry: 1,
+    retryBaseMs: 600,          // 退避基数：第 n 次重试等 基数 × 2^n
+
+    // ---------- 会话答案缓存 ----------
+    // 同一份卷里重复的题、停止后重开、重考同一份卷，都不该重新联网。
+    // 缓存只在本次页面生命周期内有效（不进 GM 存储），所以不会把旧答案带到别的考试。
+    answerCacheTtlMs: 30 * 60 * 1000,
+    answerCacheMax: 500,
 
     // ---------- 多源合并 ----------
     crossCheckBelow: 0.8,      // 主源把握低于此值才追加次源交叉验证
@@ -1150,8 +1160,39 @@
   }
 
   // ---------------------------------------------------------------- 请求
+  /**
+   * 是否值得重试。只认「可能自愈」的失败：
+   * 网络抖动、超时、5xx。4xx 重试也没有意义（403 反爬、404 路径错），直接返回。
+   */
+  function retriable(r) {
+    if (!r || r.ok) return false;
+    if (r.err === 'network' || r.err === 'timeout') return true;
+    return r.status >= 500 && r.status < 600;
+  }
+
+  /**
+   * 给请求套上指数退避重试。
+   * 百度偶发一次超时就让整道题判死太浪费——单题预算 20 秒，重试一次通常就回来了。
+   * 每次重试前都看 deadline，预算不足就地放弃，不把一题拖成几分钟。
+   */
+  async function withRetry(send, ctx = {}) {
+    const max = Math.max(0, Math.floor(+CONFIG.maxRetry || 0));
+    let last = null;
+    for (let i = 0; i <= max; i++) {
+      if (i > 0) {
+        const wait = Math.min((+CONFIG.retryBaseMs || 600) * Math.pow(2, i - 1), 4000);
+        if (ctx.deadline && Date.now() + wait >= ctx.deadline) return last;
+        await sleep(wait);
+      }
+      last = await send();
+      if (last.ok || !retriable(last) || i === max) return last;
+      dbg(`请求失败（${last.err || 'HTTP ' + last.status}），${i + 1}/${max} 次重试`);
+    }
+    return last;
+  }
+
   /** 单次 GET。超时按「配置值」与「本题剩余预算」取小，避免一题拖成几分钟 */
-  function httpGet(url, ctx = {}) {
+  function httpGetOnce(url, ctx = {}) {
     const left = ctx.deadline ? Math.max(0, ctx.deadline - Date.now()) : CONFIG.baiduTimeout;
     const timeout = Math.max(1000, Math.min(ctx.timeout || CONFIG.baiduTimeout, left || 1000));
     return new Promise((resolve) => {
@@ -1175,7 +1216,13 @@
     });
   }
 
-  function httpPost(url, headers, body, ctx = {}) {
+  // 跟进页只是补充信息，重试它会把整题预算耗在次要页面上
+  function httpGet(url, ctx = {}) {
+    if (ctx.noRetry) return httpGetOnce(url, ctx);
+    return withRetry(() => httpGetOnce(url, ctx), ctx);
+  }
+
+  function httpPostOnce(url, headers, body, ctx = {}) {
     const left = ctx.deadline ? Math.max(0, ctx.deadline - Date.now()) : (ctx.timeout || CONFIG.aiTimeout);
     const timeout = Math.max(1000, Math.min(ctx.timeout || CONFIG.aiTimeout, left || 1000));
     return new Promise((resolve) => {
@@ -1198,6 +1245,11 @@
         ontimeout: () => resolve({ ok: false, status: 0, text: '', err: 'timeout' }),
       });
     });
+  }
+
+  function httpPost(url, headers, body, ctx = {}) {
+    if (ctx.noRetry) return httpPostOnce(url, headers, body, ctx);
+    return withRetry(() => httpPostOnce(url, headers, body, ctx), ctx);
   }
 
   function failText(r, who) {
@@ -1240,7 +1292,8 @@
         .slice(0, CONFIG.baiduFollowLinks);
       for (const u of links) {
         if (ctx.deadline && Date.now() >= ctx.deadline) { budgetSpent = true; break; }
-        const pr = await httpGet(u, { ...ctx, headers: { 'User-Agent': UA } });
+        // 跟进页是补充信息，不重试：把预算耗在次要页面上会让整题超时
+        const pr = await httpGet(u, { ...ctx, headers: { 'User-Agent': UA }, noRetry: true });
         if (!pr.ok || !pr.text) {
           // 跟进页是站外页面，@connect 只放行 www.baidu.com 时会被拦。
           // 每题提示一次，但只用于摘要作答也够，不算失败。
@@ -1349,6 +1402,47 @@
     return { text: content, note: '' };
   }
 
+  // ---------------------------------------------------------------- 会话答案缓存
+  /**
+   * 本场答案缓存（只在当前页面生命周期内有效，不写 GM 存储）。
+   *
+   * 要它解决三件真实重复：
+   *   1. 同一份卷里题干重复出现（采集时就见过：470 条原始题去重后 469 条）
+   *   2. 点了「停止」再点「开始」——已答的题会跳过，但未答/改过的题会重新查
+   *   3. 同一份卷重考
+   * 每题最多 20 秒网络预算，重复查询既慢又更容易撞上百度的反爬验证。
+   */
+  const answerCache = new Map();
+
+  /** 缓存键（纯函数，自检可断言）：题型 + 题干指纹 + 选项文本序列 */
+  function answerCacheKey(stem, type, options) {
+    return `${type}|${fpKey(stem)}|${(options || []).map((o) => o.text).join('\u0001')}`;
+  }
+
+  function cacheLookup(map, key, now = Date.now(), ttl = CONFIG.answerCacheTtlMs) {
+    const hit = map.get(key);
+    if (!hit) return null;
+    if (now - hit.ts > ttl) { map.delete(key); return null; }
+    return hit;
+  }
+
+  /** 先进先出淘汰：Map 的插入顺序即时间顺序，删最早的键 */
+  function cacheStore(map, key, value, now = Date.now(), max = CONFIG.answerCacheMax) {
+    map.delete(key);          // 先删再插，让它排到队尾
+    map.set(key, { ...value, ts: now });
+    while (map.size > Math.max(1, Math.floor(+max) || 500)) {
+      map.delete(map.keys().next().value);
+    }
+    return map;
+  }
+
+  /** 清除本场缓存：清空本场 / 手动对账后想让下次重查时用 */
+  function clearAnswerCache() {
+    const n = answerCache.size;
+    answerCache.clear();
+    return n;
+  }
+
   // ---------------------------------------------------------------- 查询链
   /**
    * 按面板模式决定主源，另一源作为备源：
@@ -1362,10 +1456,25 @@
     if (typeof navigator !== 'undefined' && navigator.onLine === false) {
       return { cand: null, notes: ['当前离线，已跳过联网查询'], budget: false };
     }
+    const forceTwo = !!opts.forceTwoSources || !!CONFIG.forceCrossCheck;
+    // 缓存键用「题型 + 题干指纹 + 选项文本」：选项顺序变了就不是同一道题，必须重查。
+    // 强制二源时绕过缓存——那个开关的语义就是「这题我要新鲜的第二个来源」。
+    const cacheKey = answerCacheKey(stem, type, options);
+    if (!forceTwo && !opts.noCache) {
+      const hit = cacheLookup(answerCache, cacheKey);
+      if (hit) {
+        log(`⚡ 会话缓存命中：${hit.letters}（${Math.round(hit.conf * 100)}%），本题不再联网`);
+        return {
+          cand: { letters: hit.letters, conf: hit.conf, srcs: ['cache'], why: hit.why || '会话缓存' },
+          notes: ['会话缓存命中（本场同题已查过）'],
+          budget: false,
+          cached: true,
+        };
+      }
+    }
     const budgetMs = Math.max(1000, +CONFIG.queryBudgetMs || 20000);
     const deadline = Date.now() + budgetMs;
     const order = CONFIG.answerMode === 'ai' ? ['ai', 'baidu'] : ['baidu', 'ai'];
-    const forceTwo = !!opts.forceTwoSources || !!CONFIG.forceCrossCheck;
     const cands = [];
     let budgetSpent = false;
     let dispute = null;
@@ -1426,6 +1535,8 @@
     const merged = mergeCandidates(cands, type, options, (ranked) => {
       dispute = recordDispute(stem, type, options, ranked);
     });
+    // 只缓存两源合并后的最终结果：把中间候选当定论会让下一题误用半成品
+    if (merged) cacheStore(answerCache, cacheKey, { letters: merged.letters, conf: merged.conf, why: merged.why });
     return { cand: merged, notes, budget: budgetSpent, dispute };
   }
 
@@ -1455,6 +1566,8 @@
       letters: picked.map((o) => o.letter),
       texts: picked.map((o) => o.text),
       source: r.cand.srcs.join('+'),
+      // 来源标签直接给人看，别在日志里漏出 'baidu'/'cache' 这类内部代号
+      sourceText: r.cand.srcs.map((s) => SRC_NAME[s] || s).join('+'),
       conf: r.cand.conf,
       why: r.cand.why,
     };
@@ -1504,12 +1617,32 @@
   let examAbort = false;
   // 暂停：只在两题之间生效（已点的选项不回滚）。与法宣的 paused 语义一致。
   let pausedFlag = false;
-  // 本场作答记录（面板「已答 N」与手动对账都读它）
+  /**
+   * 本场作答记录（面板「已答 N」、手动对账、对账入库都读它）。
+   *
+   * 每条必须带 `no`（卷面题号，1-based）。曾经用数组下标当题号，
+   * 一旦中间有题作答失败没进 history，后面所有题号就整体前移——
+   * 手动对账会把「第 3 题答对」写到第 4 题上，直接污染题库。
+   */
   const history = [];
   // 本次试卷总题数，用于进度与「已答 N/M」
   let totalQ = 0;
   // 自动关闭本页的倒计时句柄
   let autoCloseTimer = null;
+
+  /** 把某题的作答记录写入 history：同题号先删旧记录，避免重复累积 */
+  function recordHistory(item) {
+    const at = history.findIndex((h) => h.no === item.no || (item.qid && h.qid === item.qid));
+    if (at >= 0) history.splice(at, 1);
+    history.push(item);
+    history.sort((a, b) => a.no - b.no);
+  }
+
+  /** 该题当前页面上的选中字母（排序后拼串，便于比较） */
+  function liveLetters(q) {
+    return q.options.filter((o) => o.input && o.input.checked)
+      .map((o) => o.letter).sort().join(',');
+  }
 
   /**
    * 顶栏两个按钮的文案与可用性（纯函数，自检可断言）。
@@ -1568,13 +1701,24 @@
     const unknownList = [];
 
     try {
-      for (const q of questions) {
+      for (let qi = 0; qi < questions.length; qi++) {
+        const q = questions[qi];
+        const no = qi + 1;   // 卷面题号：history 与手动对账都用它，不用数组下标
         if (examAbort) {
           log('已中止作答');
           break;
         }
         await waitWhilePaused();
         if (examAbort) break;
+        // 真「续答」：该题已按同样的答案填过就不再动它。
+        // 以前不判这一条，点两次「开始」会把整份卷子重答一遍，
+        // history 也跟着翻倍（面板显示「已答 10/5」）。
+        const prev = history.find((h) => h.no === no);
+        if (prev && prev.letters && liveLetters(q) === prev.letters.slice().sort().join(',')) {
+          done++;
+          log(`第 ${q.qid} 题已答过（${prev.letters.join(',')}），跳过`);
+          continue;
+        }
         const decided = await decide(q);
         if (!decided) {
           unknown++;
@@ -1585,11 +1729,11 @@
         const r = applyAnswer(q, decided.picked);
         if (r.matched) {
           done++;
-          const srcLabel = { bank: '题库' }[decided.source] || decided.source;
+          const srcLabel = decided.sourceText || { bank: '题库' }[decided.source] || decided.source;
           const conf = decided.conf != null ? ` · 把握 ${Math.round(decided.conf * 100)}%` : '';
           log(`第 ${q.qid} 题作答（${srcLabel}）：${r.want.join(',')}${conf}`);
-          history.push({
-            qid: q.qid, stem: q.stem, type: q.type,
+          recordHistory({
+            no, qid: q.qid, stem: q.stem, type: q.type,
             picked: decided.texts, letters: r.want, ok: true, source: decided.source, at: Date.now(),
           });
         } else {
@@ -1813,6 +1957,25 @@
           v.muted = true;
           log('已静音（满足浏览器自动播放策略，不影响计时）');
         }
+      }
+    },
+
+    /**
+     * 把「意外暂停续播 / 静音」按当前配置即时应用。
+     *
+     * install() 有 installed 守卫，只在首次真正执行；用户后来在面板把开关从关拨到开时，
+     * 若只调 install() 会直接 return —— 日志写着「已开启」，实际什么都没接上。
+     * 这两步自身是幂等的（video 上有 dataset 标记、muted 赋值可重复），可以随便重入。
+     */
+    applyLive() {
+      if (!this.installed) return;
+      if (CONFIG.keepPlaying) this.watchVideo();
+      const v = document.querySelector('video');
+      if (!v) return;
+      if (CONFIG.muteForAutoplay) {
+        if (!v.muted) v.muted = true;
+      } else if (v.muted) {
+        v.muted = false;   // 关掉开关就该把声音还回去，否则用户以为静音开关坏了
       }
     },
 
@@ -2417,6 +2580,9 @@
         const box = $('fx-log');
         if (box) box.innerHTML = '';
         logLines.length = 0;
+        // logBuf 是「导出诊断包」的数据源。只清屏幕不清它，用户以为删掉的日志
+        // 还会跟着诊断包发出去——里面可能含题干与页面地址。
+        logBuf.length = 0;
         syncBadges(['log']);
       },
       logText() { return logLines.join('\n'); },
@@ -2550,9 +2716,11 @@
     /** 把人工判定结果按题号写回题库：只写「对」的题，判错的不入库 */
     function applyManualVerdicts(verdicts) {
       let ok = 0;
+      // 按记录里的真实题号（no）匹配，不能用数组下标：
+      // 中间有题没答成功时，下标会与卷面题号错位，答案就写到别的题上去了。
       batchWrite(() => {
-        history.forEach((h, i) => {
-          if (verdicts[i + 1] !== true) return;
+        history.forEach((h) => {
+          if (verdicts[h.no] !== true) return;
           if (!h.stem || !h.picked || !h.picked.length) return;
           saveEntry(h.stem, h.type, h.picked, h.letters, { src: 'manual', verified: true });
           ok++;
@@ -2762,7 +2930,9 @@
         store.set('cfg_' + key, CONFIG[key]);
         syncToggles();
         syncBadges(['play']);
-        if ((key === 'unlockBlur' || key === 'keepPlaying') && CONFIG[key]) playerGuard.install();
+        if (CONFIG[key]) playerGuard.install();
+        // install 只生效一次；从关拨到开时必须再走一遍，否则日志说开了实际没接上
+        playerGuard.applyLive();
         if (key === 'unlockBlur' && !CONFIG[key] && playerGuard.installed) {
           log('已停止拦截失焦；如需完全恢复平台原有的暂停行为，请刷新播放页', 'warn');
         }
@@ -2951,8 +3121,11 @@
       }
       history.length = 0;
       store.set('lastExam', null);
+      // 缓存也一起清：清空本场之后重答，用户要的是重新查一遍，
+      // 而不是拿上一轮的缓存答案把场次「演」一遍。
+      const dropped = clearAnswerCache();
       api.refresh();
-      log('已清空本场作答记录，可重新开始答题', 'ok');
+      log(`已清空本场作答记录${dropped ? `（同时清掉 ${dropped} 条会话缓存）` : ''}，可重新开始答题`, 'ok');
     });
 
     // 补全内置：脚本升级带来新题、或误清空后用它一次补回（本脚本独有）
@@ -3367,6 +3540,10 @@
     parseVersion,
     runBtnLabels,
     parseManualVerdicts,
+    answerCacheKey,
+    cacheLookup,
+    cacheStore,
+    retriable,
     extractAnswer,
     normalizeAnswer,
     mergeCandidates,
@@ -3512,6 +3689,44 @@
       eq('手动对账：区间写法', parseManualVerdicts('1-3=对')[2], true);
       eq('手动对账：单点判错', parseManualVerdicts('5=错')[5], false);
       eq('手动对账：乱写不产生条目', Object.keys(parseManualVerdicts('随便写点')).length, 0);
+
+      // ---------- 会话答案缓存 ----------
+      const ck = answerCacheKey('新时代主要矛盾是什么', 'single', O4);
+      eq('缓存键：同题同选项一致', ck, answerCacheKey('新时代主要矛盾是什么', 'single', O4));
+      eq('缓存键：选项顺序变化即视为不同题',
+        ck === answerCacheKey('新时代主要矛盾是什么', 'single', [O4[1], O4[0], O4[2], O4[3]]), false);
+      eq('缓存键：题型不同即不同', ck === answerCacheKey('新时代主要矛盾是什么', 'multi', O4), false);
+      const cm = new Map();
+      cacheStore(cm, 'k', { letters: 'B', conf: 0.9 }, 1000);
+      eq('缓存：TTL 内命中', cacheLookup(cm, 'k', 2000, 5000).letters, 'B');
+      eq('缓存：超 TTL 视为未命中', cacheLookup(cm, 'k', 9000, 5000), null);
+      eq('缓存：未命中返回 null', cacheLookup(cm, 'nope', 1000, 5000), null);
+      const cm2 = new Map();
+      for (let i = 0; i < 5; i++) cacheStore(cm2, 'k' + i, { letters: 'A', conf: 1 }, i, 3);
+      eq('缓存：超上限按先进先出淘汰', cm2.size, 3);
+      eq('缓存：最旧的键被淘汰', cm2.has('k0'), false);
+
+      // ---------- 重试判定 ----------
+      eq('重试：网络错误可重试', retriable({ ok: false, err: 'network', status: 0 }), true);
+      eq('重试：超时可重试', retriable({ ok: false, err: 'timeout', status: 0 }), true);
+      eq('重试：502 可重试', retriable({ ok: false, err: '', status: 502 }), true);
+      eq('重试：403 不重试（反爬重试也白搭）', retriable({ ok: false, err: '', status: 403 }), false);
+      eq('重试：成功不重试', retriable({ ok: true, status: 200 }), false);
+
+      // ---------- 作答记录按真实题号索引 ----------
+      const h = [];
+      const pushH = (no, qid, letters) => {
+        const at = h.findIndex((x) => x.no === no || x.qid === qid);
+        if (at >= 0) h.splice(at, 1);
+        h.push({ no, qid, letters });
+        h.sort((a, b) => a.no - b.no);
+      };
+      pushH(1, 'd1', ['C']); pushH(2, 'd2', ['B']); pushH(3, 'd3', ['A']);
+      eq('作答记录：三条按题号排列', h.map((x) => x.no).join(','), '1,2,3');
+      pushH(2, 'd2', ['B']);   // 重答同一题（模拟停止后再点开始）
+      eq('作答记录：重答同题不新增条目', h.length, 3);
+      eq('作答记录：重答后题号不变', h.map((x) => x.no).join(','), '1,2,3');
+      eq('作答记录：重答更新答案内容', h[1].letters.join(','), 'B');
 
       // 诊断包日志脱敏
       eq('遮蔽 URL 里的 token',

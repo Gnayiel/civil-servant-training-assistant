@@ -22,20 +22,24 @@ const SCRIPT = join(ROOT, 'civil-servant-training-assistant.user.js');
 // 面板统计行与日志里有 emoji（📊 💾 🎛 ⏹️）。无头 Chromium 默认不带 emoji 字体，
 // 缺字体时这些字符会渲染成豆腐块，README 第一张图就废了。
 // 渲染时临时挂一个 Noto Emoji（只影响配图，不进仓库、不改脚本）。
-// 放在 TMP 之外：脚本末尾会 rmSync(TMP) 清临时产物，字体若放里面，第二次运行就没了
-const FONT_DIR = join(ROOT, '.tmp-font');
-const EMOJI_FONT = join(FONT_DIR, 'NotoEmoji.woff2');
-// file:// 页面用 @font-face 引 file:// 字体会被 CORS 拦下（无头 Chrome 同样如此），
-// 所以字体必须以 data URI 内联进页面。
-function emojiFontDataUri() {
-  if (!existsSync(EMOJI_FONT)) {
-    console.warn('缺少 emoji 字体，统计行里的 📊💾🎛 会渲染成方块；'
-      + `下载到 ${EMOJI_FONT} 后重跑：\n`
-      + '  mkdir -p .tmp-font && curl -sL -o .tmp-font/NotoEmoji.woff2 '
-      + 'https://fastly.jsdelivr.net/npm/@fontsource/noto-emoji@5.0.0/files/noto-emoji-emoji-400-normal.woff2');
-    return '';
+
+// 面板统计行与日志里有 emoji（📊 💾 🎛 ⏹️）。无头 Chromium 不带 emoji 字体，
+// 缺字体时这些字符渲染成方块，README 第一张图就废了。
+// 做法是让系统装一个 Noto Emoji（fc-list 能看到即可），浏览器会直接从系统取。
+function ensureEmojiFont() {
+  const ok = (() => {
+    try {
+      return execFileSync('sh', ['-c', 'fc-list | grep -ci "Noto Emoji"'], { encoding: 'utf8' }).trim() !== '0';
+    } catch { return false; }
+  })();
+  if (!ok) {
+    console.warn('系统里没有 emoji 字体，统计行里的 📊💾🎛 会渲染成方块。安装：\n'
+      + '  mkdir -p ~/.local/share/fonts && curl -sL -o /tmp/ne.woff2 '
+      + 'https://fastly.jsdelivr.net/npm/@fontsource/noto-emoji@5.0.0/files/noto-emoji-emoji-400-normal.woff2\n'
+      + '  # woff2 需转 ttf 后才能被 fontconfig 识别（fonttools：TTFont(p).flavor=None; save(t)）\n'
+      + '  fc-cache -f ~/.local/share/fonts');
   }
-  return 'data:font/woff2;base64,' + readFileSync(EMOJI_FONT).toString('base64');
+  return ok;
 }
 
 function arg(name, dft = '') {
@@ -63,6 +67,8 @@ if (!FFMPEG) {
 }
 
 // ---------------------------------------------------------------- 读取动态数字
+ensureEmojiFont();
+
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 const version = arg('version', pkg.version);
 const seed = JSON.parse(readFileSync(join(ROOT, 'data', 'bank-seed.json'), 'utf8'));
@@ -79,7 +85,6 @@ const coverage = ((seed.length / uniq.length) * 100).toFixed(1);
 console.log(`版本 ${version} · 题库 ${bankCount} 条 · 自检 ${selfTestCount} 项 · 覆盖率 ${coverage}%`);
 
 mkdirSync(TMP, { recursive: true });
-mkdirSync(FONT_DIR, { recursive: true });
 
 // ---------------------------------------------------------------- 面板 HTML
 // 复刻试卷版式 + 内联脚本 + 一段隐藏的真实结构试卷 DOM，
@@ -144,7 +149,13 @@ window.GM_setValue=function(k,v){localStorage.setItem(k,JSON.stringify(v));};
 window.GM_info={script:{version:'${version}'}};
 </script>
 <style>
-  @font-face{font-family:'NotoEmojiLocal';src:url('${emojiFontDataUri()}') format('woff2');font-display:block;}
+  /* font-display 必须是 swap：用 block 时字体就绪前整段文字「不可见」，
+     无头浏览器的虚拟时间会把字体加载无限推迟，结果面板里所有文字都不绘制（实测整块空白）。
+     swap 先用兜底字体渲染，字体到了再替换，最坏情况只是 emoji 显示成方块。 */
+  /* emoji 由系统字体提供（见 ensureEmojiFont）。不要用 @font-face 的 data URI：
+     font-display:block 会让「字体就绪前文字不可见」，而无头浏览器的虚拟时间
+     不推进字体加载任务，结果面板里所有文字都不绘制（实测整块空白）；
+     换成 swap 则字体永远不加载，emoji 一直是方块。两种都不行。 */
   #csta-panel-host{right:26px!important;top:92px!important;bottom:auto!important;}
   /* 注意：面板在 Shadow DOM 里，这里的任何选择器都进不去。
      emoji 字体必须在影子根内部注入，见下面的 injectEmojiFont()。 */
@@ -160,11 +171,12 @@ function injectEmojiFont() {
   st.id = '__emoji';
   // 只把 emoji 字体挂在字体栈末尾作兜底。若把它写在前头，汉字会因为没有对应
   // 字形而整段变成空白（上一版就是这样把面板渲染空的）。
+  // 只补一个 emoji 兜底：中文交给系统默认，emoji 落到 Noto Emoji。
+  // 注意 emoji 字体必须排在最后——放前面时汉字因无字形会整段空白。
   st.textContent = ''
-    + '#fx-panel, #fx-panel *, #fx-panel .log-box, #fx-panel .log-line {'
-    + 'font-family:-apple-system,"Segoe UI","Microsoft YaHei","PingFang SC",'
-    + '"Source Han Sans SC","Noto Sans CJK SC",sans-serif,"NotoEmojiLocal" !important;'
-    + '}';
+    + '#fx-panel, #fx-panel *{font-family:inherit,"Noto Emoji","NotoEmojiLocal";}'
+    + '#fx-panel .log-box,#fx-panel .log-line{'
+    + 'font-family:ui-monospace,"Cascadia Mono",Consolas,monospace,"Noto Emoji","NotoEmojiLocal";}';
   root.appendChild(st);
   return true;
 }
@@ -241,6 +253,15 @@ function socialHtml(dark) {
 function shot(html, out, w, h, scale) {
   const page = join(TMP, `page-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.html`);
   writeFileSync(page, html, 'utf8');
+  // DEBUG_SHOT=1 时保留页面并打印控制台，用于排查「图里元素是空的」
+  if (process.env.DEBUG_SHOT) {
+    const dom = execFileSync(CHROME, [
+      '--headless', '--disable-gpu', '--no-sandbox', '--hide-scrollbars',
+      `--window-size=${w},${h}`, '--virtual-time-budget=14000', '--dump-dom', `file://${page}`,
+    ], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+    console.log('[DEBUG] 页面保留在', page);
+    return;
+  }
   execFileSync(CHROME, [
     '--headless', '--disable-gpu', '--no-sandbox', '--hide-scrollbars',
     `--window-size=${w},${h}`, `--force-device-scale-factor=${scale}`,
