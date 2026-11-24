@@ -113,16 +113,20 @@ ok('未把 innerHTML 拼进动态值（只允许静态模板）',
 ok('没有硬编码账号密码', !/dongyu/i.test(code) && !/820330/.test(code));
 // 更新地址的两个角色必须分工（都实测过才定的）：
 //
-// @updateURL 要当「移动指针」，用来发现新版本。必须用 @latest 解析到最新 tag，
-//   不能用 @main —— 分支指针在 CDN 上陈旧得离谱：实测 main 已是 1.3.9 时，
-//   @main 先后返回过 1.2.0 和 1.1.0（不同边缘节点不一致），
-//   响应头 max-age=604800（7 天）/ s-maxage=43200（12 小时），
-//   且分支缓存键不含查询串，加 ?t= 时间戳也绕不过。
+// @updateURL 要当「移动指针」，用来发现新版本。用 GitHub 的 releases/latest/download：
+//   它随新 Release 立即改指向，实测打完 tag 后立刻就能读到新版本号。
 //
-// @downloadURL 要当「固定指针」，用来重装当前版本。必须钉到本版 tag，
-//   否则在 @latest 的解析缓存窗口内（实测 tag 打完后仍停在上一版），
-//   用户点「重新安装」会被静默降级。钉死后重装永远拿到与已装一致的版本；
-//   而更新流程拿的是 @latest 取回的新文件，里面声明的是新 tag，所以仍能升级。
+//   为什么不放在 jsDelivr：
+//     - @main（分支）：实测 main 已是 1.3.9 时，先后返回过 1.2.0 与 1.1.0
+//       （不同边缘节点不一致），max-age 7 天 / s-maxage 12 小时，
+//       且分支缓存键不含查询串，加 ?t= 时间戳也绕不过；
+//     - @latest（最新 tag）：也会滞后，实测 v1.3.10 已发布时仍停在 1.3.8（落后 3 版）。
+//   两条都做不了「版本发现」，只能用于「按已知版本取文件」。
+//
+// @downloadURL 要当「固定指针」，用来重装当前版本。钉到本版 tag（jsDelivr）：
+//   钉死的 tag URL 没有缓存问题，实测打完 tag 立刻可读；同时国内可达，
+//   把「实际下载脚本」这一步留在 jsDelivr，只有「读版本号」走 GitHub。
+//   若用移动指针，在 CDN 滞后的窗口里点「重新安装」会被静默降级。
 // 只看 UserScript 头，别把正文注释里提到这两个字段的地方也算进来
 const header = (code.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/) || [''])[0];
 const version = (/@version\s+(\S+)/.exec(header) || [])[1] || '';
@@ -133,8 +137,8 @@ const urlOf = (key) => {
 const upd = urlOf('updateURL');
 const dl = urlOf('downloadURL');
 ok('声明了 @updateURL 与 @downloadURL', !!upd && !!dl, `${upd} | ${dl}`);
-ok('@updateURL 用 @latest（移动指针），不用分支',
-  /@latest\//.test(upd) && !/@(?:main|master)\//.test(upd), upd);
+ok('@updateURL 是可靠的移动指针（Release 固定入口），不用分支',
+  /\/releases\/latest\/download\//.test(upd) && !/@(?:main|master)\//.test(upd), upd);
 ok('@downloadURL 钉到本版 tag（固定指针，防重装降级）',
   !!version && dl.includes('@v' + version + '/'), `${dl} vs v${version}`);
 ok('没有把 cookie/token 写进日志', !/document\.cookie/.test(code));

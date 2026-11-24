@@ -32,6 +32,42 @@
 - `tools/check-docs.mjs` 的目录跳过列表补上 `.ref`、`.tmp-*`、`.dbg`，避免临时目录里的 Markdown 造成误报。
 
 
+## v1.3.11
+
+v1.3.10 把 `@updateURL` 放在 jsDelivr `@latest`，实测它同样不可靠，这里换成唯一验证过即时的入口。
+
+### 修复
+
+- **`@updateURL` 改到 GitHub `releases/latest/download/…`**。实测 jsDelivr 的两种写法
+  都做不了「发现新版本」：
+
+  | 写法 | 实测 |
+  | --- | --- |
+  | `@main` | `main` 已是 1.3.9 时先后返回 **1.2.0** 与 **1.1.0**（边缘节点不一致） |
+  | `@latest` | `v1.3.10` 已发布时仍停在 **1.3.8**（落后 3 版） |
+
+  GitHub 的 `releases/latest/download` 随新 Release 立即改指向，实测 200 / 260285 字节，
+  与本地一致。只有「读版本号」这一步走 GitHub；真正的脚本下载仍在 jsDelivr
+  （`@downloadURL` 钉到本版 tag，国内可达且无缓存问题）。
+
+### 说明
+
+这一版把 v1.3.9 / v1.3.10 两次试探的结论收敛成最终形态：
+
+- `@updateURL` = GitHub Release 固定入口（移动指针，准）
+- `@downloadURL` = jsDelivr 本版 tag（固定指针，快且国内可达）
+
+代价是版本检查依赖 github.com 可达。若不可达，油猴只是收不到更新提示，不会出错；
+面板里的「检查更新」同样查 GitHub API，结论一致。这一点已写进 README。
+
+### 验证方式
+
+- 三个入口实测：`releases/latest/download` → 200/260285（与本地一致）；
+  jsDelivr `@v1.3.11` → 精确命中；jsDelivr `@latest` → 仍滞后。
+- `selftest` 断言改为「`@updateURL` 必须命中 `/releases/latest/download/` 且不含分支名」
+  与「`@downloadURL` 的 tag 等于 `@version`」，两条都可反向触发。
+- 统一门禁 7 步 / 224 项断言全绿。
+
 ## v1.3.10
 
 v1.3.9 已把 `@main` 换成 `@latest`，但又实测出两个新事实，需要再收一次口。
