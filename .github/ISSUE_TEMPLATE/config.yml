@@ -1,5 +1,12 @@
+# 关掉空白 issue：强制走模板，减少「求脚本 / 刷视频」这类与本项目无关的空白 issue。
 blank_issues_enabled: false
 contact_links:
-  - name: 使用问题先看文档
-    url: https://github.com/Gnayiel/civil-servant-training-assistant/blob/main/docs/DEVELOPMENT.md
-    about: 安装、题库更新、平台改版排查都在这里
+  - name: 安全问题 / 漏洞报告
+    url: https://github.com/Gnayiel/civil-servant-training-assistant/blob/main/SECURITY.md
+    about: 请勿在公开 issue 里贴 API Key 或安全问题细节，按 SECURITY.md 私下报告。
+  - name: 功能建议（Feature request）
+    url: https://github.com/Gnayiel/civil-servant-training-assistant/issues/new?template=feature_request.yml
+    about: 希望新增能力或改进体验时用这个模板；不确定是否值得做也可以先到 Discussions 讨论。
+  - name: 使用问题 / 其他讨论（GitHub Discussions）
+    url: https://github.com/Gnayiel/civil-servant-training-assistant/discussions
+    about: 不是 bug 或功能建议的讨论、求脚本、刷课刷视频之类请走 Discussions，不要开空白 issue。

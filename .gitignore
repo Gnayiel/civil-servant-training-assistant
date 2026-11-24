@@ -23,3 +23,11 @@ Thumbs.db
 .vscode/
 *.swp
 .Trash-0/
+
+# 临时工作目录（配图渲染、冒烟测试、预览缩略图）
+.tmp-*/
+.tmp-docs-images/
+.tmp-view/
+
+# 参考实现与探测现场的副本
+.ref/

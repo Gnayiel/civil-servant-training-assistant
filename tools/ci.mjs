@@ -14,16 +14,22 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STRICT = process.argv.includes('--strict');
 const NO_SMOKE = process.argv.includes('--no-smoke');
 
-const steps = [
+// 步骤清单是唯一事实来源：selftest 会校验文档里写的步数与这里一致。
+export const ALL_STEPS = [
   ['语法检查', ['tools/check-syntax.mjs']],
   ['文档检查', ['tools/check-docs.mjs']],
-  ['数据检查', ['tools/check-data.mjs']],
   ['内置自检', ['tests/selftest.mjs']],
+  ['数据检查', ['tools/check-data.mjs']],
+  ['合并冒烟', ['tests/merge-smoke.mjs']],
   ['工作流检查', ['tools/check-workflows.mjs']],
+  ['页面冒烟', ['tests/page-smoke.mjs']],
 ];
-if (!NO_SMOKE) {
-  steps.push(['页面冒烟', ['tests/page-smoke.mjs'].concat(STRICT ? ['--require-browser'] : [])]);
-}
+
+const steps = ALL_STEPS.filter(([name]) => !(NO_SMOKE && name === '页面冒烟'))
+  .map(([name, args]) => [
+    name,
+    args.concat(name === '页面冒烟' && STRICT ? ['--require-browser'] : []),
+  ]);
 
 let failed = 0;
 const started = Date.now();

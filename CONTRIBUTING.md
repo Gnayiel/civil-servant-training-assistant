@@ -27,12 +27,28 @@
 ## 提 PR 之前
 
 ```bash
-node tools/ci.mjs          # 语法 + 文档 + 数据 + 自检 + 工作流 + 页面冒烟
+node tools/ci.mjs            # 统一门禁：7 步
+node tools/ci.mjs --strict   # 要求必须有浏览器（涉及页面逻辑的改动必跑）
 ```
 
 要求全绿。没有浏览器时冒烟测试会自动跳过，但涉及页面逻辑的改动请本地跑一次 `--strict`。
 
+CI 会在 Node 22 上跑完整门禁、Node 24 上跑快速门禁。第三方 action 都 pin 到 commit SHA，
+不要改成 `@v4` 这类可变标签——`tools/check-workflows.mjs` 会拦下来。
+
 如果改了题库或数据文件，`npm test` 会校验脚本内嵌的 `SEED_RAW` 与 `data/bank-seed.json` 是否一致——忘了同步会直接失败，这是故意的。
+
+## 新增省份适配
+
+这是本项目最欢迎的贡献类型。做法见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#新增省份的步骤)，核心是三步：
+
+1. 在脚本的 `SITES` 数组里加一项（`hosts`、`label`、`playerPath`、`listPath`、`sel`）；
+2. 脚本头补该省份的 `@match` 与 `@connect`；
+3. 在 `tests/fixtures/` 放一份该省份的试卷结构快照，并在 `page-smoke.mjs` 加一轮断言。
+
+第 3 步不能省：同构平台的小差异（选项容器换个类名、判断题少包一层）只有真实页面才能暴露。
+
+如果结构完全一致，只改 `hosts` 即可，`sel` 直接复用 `BASE_SEL`。
 
 ## 补题库
 
@@ -70,4 +86,5 @@ docs: 补充试卷页 DOM 层级图
 - 2 空格缩进，单引号，语句带分号
 - 单文件内用 `// ==================== 名称 ====================` 分段
 - 新增判断逻辑优先写成纯函数并加进脚本内的 `selfTest()`，Node 自检与浏览器内自检跑的是同一批用例
+- 改判断逻辑时不要只看「代码对不对」，要问「哪条断言能证明它对」
 - 动态文本一律 `textContent`，`innerHTML` 只用于静态模板

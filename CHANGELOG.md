@@ -1,14 +1,44 @@
 # Changelog
 
-本文件记录所有值得用户注意的变更。格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+本文件记录**公务员网络培训助手**的所有版本变更。
+版本号以脚本头部的 `@version` 为准；面板标题栏会显示当前版本。
 
-## [Unreleased]
+变更分四类：**新增**（新能力）、**变更**（行为或文案改了）、**修复**（原来不对的）、**移除**。
+每个版本末尾的「验证方式」写的是**当次真实跑出来**的结果；可复现的命令见
+[开发文档的统一门禁](docs/DEVELOPMENT.md#命令)。
 
-## [1.1.0] - 2026-11-24
+发版时 `tools/release.mjs` 要求每个 `## vX.Y.Z` 章节正文非空且含上述分类标题，
+`release.yml` 会把该章节正文原样作为 Release 说明。
+
+## 未发布
+
+### 变更
+
+- **仓库工程化对齐前身项目**：补齐 `.github/CODEOWNERS`、`dependabot.yml`、`feature_request.yml`、`pull_request_template.md`、`SUPPORT.md`，以及 `docs/{README,RELEASING,REPOSITORY_SETTINGS,IMAGE_PIPELINE}.md`。
+- **CI 拆成三条工作流**：`selftest.yml`（push/PR 触发，Node 22 跑完整门禁、24 跑快速门禁）、`release.yml`（打 tag 触发，verify/release 双 job + 四道发版门禁）、`auto-merge.yml`（Dependabot PR 全绿后自动 squash 合并）。
+- **第三方 action 全部 pin 到 40 位 commit SHA**，升级交给 Dependabot，不再用可变的 `@v4` 标签。
+- **新增 `tools/release.mjs`**：校验 `@version` / `package.json` / README 徽章 / CHANGELOG 章节 / 版本单调性，并在本地打 annotated tag（不 push）。
+- **新增 `tools/generate-docs-images.mjs`**：三张配图从 HTML + 真实运行的脚本重新渲染，版本号、题库条数、自检项数自动读取，不再手工维护。
+- **新增 `tools/check-external-links.mjs`**：文档外链分级检查（403/429 记警告，404/超时算失败），默认不进 CI。
+- **门禁清单唯一事实来源**：`tools/ci.mjs` 导出 `ALL_STEPS`，`tests/selftest.mjs` 校验文档里的「门禁 N 步」与它一致。门禁从 6 步扩到 7 步。
+- **新增 `tests/merge-smoke.mjs`（17 项断言）**：覆盖多标签页读盘合并、清空墓碑、脏数据容错与内置题库交互。守的是曾经真实出过的两个 bug——后落盘的标签页用旧快照冲掉对方记录、清空题库后被另一页整库复活。
+- **新增 `tools/merge-bank.mjs`**：合并多份题库快照，自动识别三种输入格式，同题不同答案列为冲突并返回非零退出码。
+- **`tools/check-workflows.mjs` 加固**：校验 action 是否 pin 到 40 位 commit SHA、是否显式声明 `permissions`、是否误用 `pull_request_target`；命令只从 `run:` 行提取，不再把注释里的举例当成真实调用。
+- **`data/bank.schema.json`** 改为描述实际的紧凑四元组格式，并附面板导出的 `dataImport` 结构。
+- `package.json` 补 `check:external`、`docs:images`、`release`、`push` 四个脚本。
+
+### 修复
+
+- `tools/check-docs.mjs` 的目录跳过列表补上 `.ref`、`.tmp-*`、`.dbg`，避免临时目录里的 Markdown 造成误报。
+
+
+## v1.1.0
+
+**2026-11-24**
 
 改成通用版本，面向各省公务员网络培训平台。
 
-### Changed
+### 变更
 
 - **更名**：脚本、仓库与面板统一改为「公务员网络培训助手」，不再绑定甘肃。
 - **多省份适配**：新增 `SITES` 适配表与 `resolveSite()` 域名解析，按省份提供域名、
@@ -18,18 +48,20 @@
   顶部状态点用颜色区分空闲 / 进行中 / 出错，状态条显示当前适配的省份。
 - 存储键前缀保留 `gwx_`，老用户的题库与设置不会丢。
 
-### Fixed
+### 修复
 
 - **分组折叠状态只恢复一半**：原来只在存了 `false` 时收起，用户展开的默认收起组
   刷新后会缩回去。改成双向恢复。
 - **`init-repo.mjs` 默认仓库名过期**，会把自动更新地址写成旧仓库；
   同时改为先删后插，换仓库名重跑能纠正已有地址。
 
-## [1.0.0] - 2026-11-24
+## v1.0.0
+
+**2026-11-24**
 
 首个公开版本。
 
-### Added
+### 新增
 
 - **快捷键**：`Alt+A` 开始作答、`Alt+H` 收起面板、`Alt+L` 清空日志，输入框聚焦时不响应。
 - **自动答题**：解析 `gradeExam/gradeExamInfo.do` 试卷页，按题型（单选 / 多选 / 判断）填答，支持自动交卷（默认关闭）。
@@ -41,7 +73,7 @@
 - **控制面板**：Shadow DOM 隔离，可拖动、分组折叠，含答题 / 观看限制 / AI 接口 / 题库 / 日志五组。
 - **AI 兜底**（可选，默认关闭）：题库未收录的题可走自定义 OpenAI 兼容接口，通过 `GM_xmlhttpRequest` 绕开 CORS。
 
-### Fixed
+### 修复
 
 - **多标签页答题会互相覆盖题库**：落盘改为「读盘 → 合并 → 写回」，同题按最近使用时间取新，
   两个标签页各答不同课程时双方的新增都能留下；清空题库会写入清空时刻，
@@ -51,17 +83,13 @@
 - **`jsTime` 可能上报 `00:00:00`**：倒计时 DOM 未读到时按 `testTime` 折算剩余时间。
 - **存在不支持的题型时会交白卷**：检测到填空/问答等未处理题型时禁用自动交卷。
 
-### Security
+### 安全
 
 - 不伪造学时、不修改上报的 `Location` 与 `Sessiontime`、不并发刷课。
 - 不采集、不上传任何数据；题库与设置只存在本地油猴存储。
 - `@connect` 仅列出目标站点与常用 AI 接口域名，不使用通配符。
 
-### Notes
+### 说明
 
 - 试卷页「全卷题数」为服务端模板写死的 10 题，实际每卷 5 题，脚本只按 DOM 统计。
 - 多选题的 `dl` 类名与单选同为 `danxuan`，题型按控件类型与 `name` 前缀判定。
-
-[Unreleased]: https://github.com/Gnayiel/civil-servant-training-assistant/compare/v1.1.0...HEAD
-[1.1.0]: https://github.com/Gnayiel/civil-servant-training-assistant/releases/tag/v1.1.0
-[1.0.0]: https://github.com/Gnayiel/civil-servant-training-assistant/releases/tag/v1.0.0

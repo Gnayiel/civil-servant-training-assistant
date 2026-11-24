@@ -2,17 +2,21 @@
   "name": "civil-servant-training-assistant",
   "version": "1.1.0",
   "private": true,
-  "description": "公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。内置甘肃省适配，其他省份可扩展。",
+  "description": "公务员网络培训平台通用 Tampermonkey 用户脚本：自动答题、解除播放失焦暂停、本地题库，内置甘肃省适配",
   "license": "MIT",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "test": "node tests/selftest.mjs && node tools/check-data.mjs",
-    "check": "node tools/check-syntax.mjs && node tools/check-docs.mjs && node tools/check-data.mjs && node tests/selftest.mjs",
-    "smoke": "node tests/page-smoke.mjs",
-    "smoke:strict": "node tests/page-smoke.mjs --require-browser",
-    "ci": "node tools/ci.mjs"
+    "test": "node tests/selftest.mjs && node tools/check-data.mjs && node tests/merge-smoke.mjs",
+    "check": "node tools/check-syntax.mjs && node tools/check-docs.mjs && node tests/selftest.mjs && node tools/check-data.mjs && node tests/merge-smoke.mjs && node tools/check-workflows.mjs",
+    "check:external": "node tools/check-external-links.mjs",
+    "ci": "node tools/ci.mjs",
+    "smoke": "node tests/page-smoke.mjs --require-browser",
+    "docs:images": "node tools/generate-docs-images.mjs",
+    "release": "node tools/release.mjs",
+    "merge-bank": "node tools/merge-bank.mjs",
+    "push": "node tools/push-to-github.mjs"
   },
   "keywords": [
     "tampermonkey",

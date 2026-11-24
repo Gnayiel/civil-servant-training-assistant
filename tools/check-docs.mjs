@@ -23,7 +23,7 @@ const ok = (name, cond, extra = '') => {
 
 function walk(dir, out = []) {
   for (const name of readdirSync(dir)) {
-    if (name === '.git' || name === 'node_modules' || name === '_ref' || name === 'probe') continue;
+    if (['.git', 'node_modules', '_ref', 'probe', '.ref', '.tmp-smoke', '.tmp-output', '.tmp-docs-images', '.tmp-view', '.dbg'].includes(name)) continue;
     const p = join(dir, name);
     const st = statSync(p);
     if (st.isDirectory()) walk(p, out);

@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Gnayiel/civil-servant-training-assistant/blob/main/data/bank.schema.json",
+  "title": "公务员网络培训助手题库快照",
+  "description": "data/bank-seed.json 的结构约定。它是紧凑四元组数组，被 tools/sync-seed.mjs 内嵌进用户脚本的 SEED_RAW。tools/check-data.mjs 用同一份约定校验仓库随附快照。导入时脚本不校验本文件，只认 data-import 结构。",
+  "type": "array",
+  "items": {
+    "type": "array",
+    "minItems": 4,
+    "maxItems": 4,
+    "description": "[题型, 题干, 答案文本数组, 答案字母数组]",
+    "items": [
+      {
+        "type": "string",
+        "enum": ["single", "multi", "judge"],
+        "description": "题型：单选 / 多选 / 判断"
+      },
+      {
+        "type": "string",
+        "minLength": 1,
+        "description": "题干。已去掉题号前缀与「（20分）」分值标记，保留原始标点"
+      },
+      {
+        "type": "array",
+        "minItems": 1,
+        "items": { "type": "string", "minLength": 1 },
+        "description": "正确答案的选项文本。判断题固定为 [\"对\"] 或 [\"错\"]，不用 1/0"
+      },
+      {
+        "type": "array",
+        "items": { "type": "string", "pattern": "^[A-D]$" },
+        "description": "答案字母，与答案文本逐项对应。判断题归一为 A（对）/ B（错）"
+      }
+    ]
+  },
+  "definitions": {
+    "dataImport": {
+      "type": "object",
+      "description": "面板「导出 JSON」产出的结构，与 bank-seed.json 的紧凑格式不同：它带元信息且题库是字典",
+      "required": ["format", "schema", "version", "bank"],
+      "properties": {
+        "format": { "const": "gwypx-exam-bank", "description": "文件自述，固定值" },
+        "schema": { "type": "integer", "enum": [1], "description": "数据结构版本，决定导入兼容性" },
+        "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$", "description": "导出时的脚本 @version，仅作溯源" },
+        "exportedAt": { "type": "string", "description": "导出时间，ISO 8601" },
+        "bank": {
+          "type": "object",
+          "description": "题库：键是归一化题干的指纹，值是条目",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["q", "t", "a", "l"],
+            "properties": {
+              "q": { "type": "string", "description": "完整题干" },
+              "t": { "type": "string", "enum": ["single", "multi", "judge"] },
+              "a": { "type": "array", "items": { "type": "string" }, "description": "答案选项文本" },
+              "l": { "type": "array", "items": { "type": "string" }, "description": "答案字母" },
+              "src": { "type": "string", "description": "来源：seed / import / exam / user" },
+              "by": { "type": "string", "description": "值为 user 表示用户手动改过" },
+              "ts": { "type": "integer", "description": "首次入库时间戳（毫秒）" },
+              "us": { "type": "integer", "description": "最近使用时间戳（毫秒）" },
+              "hit": { "type": "integer", "minimum": 0, "description": "命中次数" },
+              "ok": { "type": "integer", "minimum": 0, "description": "验证答对次数" },
+              "bad": { "type": "integer", "minimum": 0, "description": "答错次数" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

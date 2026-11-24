@@ -43,15 +43,30 @@ for (const f of files) {
   }
 
   // 形如 run: npm run xxx / node tools/yyy.mjs
-  const npmRuns = [...text.matchAll(/npm run ([\w:]+)/g)].map((m) => m[1]);
+  // 只从 run: 行取命令，避免把注释里的举例当成真实调用
+  const runLines = [...text.matchAll(/^\s*run:\s*(.+)$/gm)].map((m) => m[1]).join('\n');
+  const npmRuns = [...runLines.matchAll(/npm run ([\w:]+)/g)].map((m) => m[1]);
   for (const s of new Set(npmRuns)) {
     ok(`${f} 引用 npm run ${s}（package.json 中存在）`, scripts.includes(s), scripts.join(','));
   }
-  const nodeRuns = [...text.matchAll(/node ([\w./-]+\.mjs)/g)].map((m) => m[1]);
+  const nodeRuns = [...runLines.matchAll(/node ([\w./-]+\.mjs)/g)].map((m) => m[1]);
   for (const p of new Set(nodeRuns)) {
     ok(`${f} 引用 ${p}（文件存在）`, existsSync(join(ROOT, p)));
   }
   ok(`${f} 没有写死 npm install 依赖`, !/npm (install|ci)\b/.test(text));
+
+  // 第三方 action 必须 pin 到 40 位 commit SHA，不能用 @v4 这类可变标签：
+  // 标签可以被上游移动，等于让第三方随时改你 CI 里跑的代码。
+  const usesLines = [...text.matchAll(/^\s*-?\s*uses:\s*(\S+)/gm)].map((m) => m[1]);
+  const unpinned = usesLines.filter((u) => !/^[^@]+@[0-9a-f]{40}$/.test(u));
+  ok(`${f} 的 action 全部 pin 到 commit SHA`, unpinned.length === 0,
+    unpinned.join(', '));
+
+  // 每个 workflow 都要显式声明 permissions，避免继承仓库默认的宽权限
+  ok(`${f} 显式声明 permissions`, /^permissions:/m.test(text));
+
+  // 不要用 pull_request_target：它会带着写权限去检出外部 PR 的代码
+  ok(`${f} 不用 pull_request_target`, !/pull_request_target/.test(text));
 }
 
 console.log(failed ? `\n${failed} 项失败\n` : '\n工作流校验通过\n');

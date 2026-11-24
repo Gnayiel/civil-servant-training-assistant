@@ -64,7 +64,7 @@ resolveSite('gwypx.gsdj.gov.cn.evil.com') // → null（后缀匹配不会误判
 4. 加一条 `resolveSite` 的断言到 `selfTest()`，防止域名写错
 5. 在 `tests/fixtures/` 放一份该省份的试卷结构快照，`page-smoke.mjs` 里加一轮
 
-第 5 步可选但值得做：同构平台的小差异（比如选项容器换个类名）往往只有真实页面才能暴露。
+第 7 步可选但值得做：同构平台的小差异（比如选项容器换个类名）往往只有真实页面才能暴露。
 
 ## 3. 代码分段
 

@@ -154,8 +154,44 @@ if (hook) {
   ok('相似度对无关文本为低值', hook.similarity('完全不同的甲题', '毫不相干的乙题') < 0.3);
 }
 
+// ------------------------------------------------------------------ 门禁清单
+// tools/ci.mjs 的 ALL_STEPS 是步骤清单的唯一事实来源。
+// 文档里写的「N 步」必须与它一致，否则改了门禁而文档没跟上，读文档的人会照着跑漏掉检查。
+console.log('\n[4/5] 门禁步骤数与文档一致');
+const ciSrc = readFileSync(join(ROOT, 'tools', 'ci.mjs'), 'utf8');
+const stepNames = [...ciSrc.matchAll(/^\s*\['([^']+)',\s*\['/gm)].map((m) => m[1]);
+const totalSteps = stepNames.length;
+ok(`ci.mjs 定义了 ${totalSteps} 步`, totalSteps >= 5, stepNames.join(' / '));
+
+const docClaims = [
+  ['README.md', /node tools\/ci\.mjs/g],
+  ['docs/DEVELOPMENT.md', new RegExp(`${totalSteps} 步|全部 ${totalSteps}`)],
+  ['docs/RELEASING.md', new RegExp(`${totalSteps} 步|全部 ${totalSteps}`)],
+];
+// README 与 DEVELOPMENT 必须提到统一门禁命令
+const readmeText = readFileSync(join(ROOT, 'README.md'), 'utf8');
+ok('README 提到统一门禁命令', /node tools\/ci\.mjs/.test(readmeText));
+const devText = readFileSync(join(ROOT, 'docs', 'DEVELOPMENT.md'), 'utf8');
+ok('DEVELOPMENT 提到统一门禁命令', /node tools\/ci\.mjs/.test(devText));
+// 只校验「与统一门禁绑定」的步数，例如「统一门禁（6 步）」。
+// 宽松匹配会把 release.yml 的 7 个步骤误当成门禁步数。
+const CLAIM_RES = [
+  new RegExp(`(?:统一)?门禁[^。\\n]{0,12}?(\\d+)\\s*步`, 'g'),
+  new RegExp(`(\\d+)\\s*步[^。\\n]{0,8}?(?:统一)?门禁`, 'g'),
+];
+for (const [name, text] of [['DEVELOPMENT', devText], ['RELEASING',
+  readFileSync(join(ROOT, 'docs', 'RELEASING.md'), 'utf8')]]) {
+  const claims = [];
+  for (const re of CLAIM_RES) {
+    for (const m of text.matchAll(re)) claims.push(Number(m[1]));
+  }
+  const bad = claims.filter((n) => n !== totalSteps);
+  ok(`${name} 里与门禁绑定的步数都是 ${totalSteps}`,
+    bad.length === 0, bad.length ? `出现了 ${[...new Set(bad)].join(',')}` : '');
+}
+
 // ------------------------------------------------------------------ 题库
-console.log('\n[4/4] 内置题库');
+console.log(`\n[5/5] 内置题库`);
 const seed = JSON.parse(readFileSync(join(ROOT, 'data', 'bank-seed.json'), 'utf8'));
 const rawInScript = code.match(/const SEED_RAW = (\[[\s\S]*?\]);\n/);
 ok('脚本内含 SEED_RAW', !!rawInScript);

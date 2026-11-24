@@ -1,0 +1,61 @@
+name: Dependabot 自动合并
+
+# Dependabot 开的 PR 在 pull_request 事件里只拿到只读 GITHUB_TOKEN（GitHub 硬性限制），
+# 直接 `gh pr merge` 会 403。这里改成监听「自检」工作流跑完之后（workflow_run 使用默认
+# 分支的权限，且不检出 PR 代码，不给外部代码执行机会），只在 Dependabot 的 PR 且自检全绿时合并。
+on:
+  workflow_run:
+    workflows: ["自检"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+concurrency:
+  group: auto-merge-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  auto-merge:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: 合并 Dependabot 的绿色 PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          # 找这个分支对应的 open PR；没有就安静退出（普通分支的 push 也会触发本 workflow）
+          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open \
+                 --json number,author --jq '.[0] // empty')
+          if [ -z "$pr" ]; then echo "没有对应 PR，跳过"; exit 0; fi
+          author=$(printf '%s' "$pr" | jq -r '.author.login')
+          number=$(printf '%s' "$pr" | jq -r '.number')
+          if [ "$author" != "dependabot[bot]" ]; then
+            echo "PR #$number 不是 Dependabot 开的，跳过"; exit 0
+          fi
+          # workflow_run 只保证「自检」这一条已经结束，其他 check 可能仍在跑。
+          # gh pr checks 在「有 check 未完成」时退出码是 8，其他非零退出码直接判失败，
+          # 绝不能把「检查还没跑完」当成绿色合并。
+          attempt=1
+          until gh pr checks "$number" --repo "$GITHUB_REPOSITORY" --fail-fast; do
+            code=$?
+            if [ "$code" -ne 8 ]; then
+              echo "::error::PR #$number 的检查失败（gh pr checks 退出码 $code）"
+              exit "$code"
+            fi
+            if [ "$attempt" -ge 10 ]; then
+              echo "::error::等待 PR #$number 的检查超时（10 次 × 15 秒）"
+              exit 8
+            fi
+            echo "检查仍在进行（第 $attempt/10 次），15 秒后重试…"
+            sleep 15
+            attempt=$((attempt + 1))
+          done
+          gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --squash --delete-branch

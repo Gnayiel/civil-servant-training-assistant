@@ -2,10 +2,11 @@
 
 面向各地「公务员网络培训」平台的 Tampermonkey 用户脚本：自动作答试卷、解除「切窗口就暂停」的播放限制、本地题库积累与导入导出。
 
-![license](https://img.shields.io/badge/license-MIT-blue)
 ![version](https://img.shields.io/badge/version-1.1.0-2b5fd9)
+![license](https://img.shields.io/badge/license-MIT-blue)
 ![node](https://img.shields.io/badge/node-%E2%89%A522-3c873a)
 ![deps](https://img.shields.io/badge/dependencies-0-success)
+![tests](https://img.shields.io/badge/checks-175%20assertions-success)
 
 单文件、无构建、无第三方依赖、无遥测。可在油猴里直接读完。
 
@@ -70,6 +71,20 @@
 **观看。** 打开课程播放页即生效，无需操作。视频仍按 1 倍速真实播放。
 
 **题库。** 交卷通过后，本场答案会被标记为已验证；未通过不写库。换设备时用「导出 JSON」带走，在新环境导入。
+
+## 文档
+
+| 文档 | 面向 | 内容 |
+| --- | --- | --- |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 维护者 | 多省份适配、DOM 地图、答案数据流、反作弊拦截点 |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 贡献者 | 命令、五层测试、fixture 维护、配图、排查表 |
+| [docs/RELEASING.md](docs/RELEASING.md) | 发版维护者 | 版本号副本、发版流程、四道门禁、失败恢复、回滚 |
+| [docs/REPOSITORY_SETTINGS.md](docs/REPOSITORY_SETTINGS.md) | 仓库管理员 | Actions 权限、rulesets、Security（均为建议，需网页确认） |
+| [docs/IMAGE_PIPELINE.md](docs/IMAGE_PIPELINE.md) | 维护者 | 三张配图的生成方式与数字同步 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献者 | 改哪一层、不接受的方向 |
+| [SUPPORT.md](SUPPORT.md) | 使用者 | 求助渠道、要附带的材料 |
+| [data/README.md](data/README.md) | 题库维护者 | 快照字段、覆盖率、来源与边界 |
+| [docs/README.md](docs/README.md) | 所有人 | 文档索引与维护约定 |
 
 ## 边界
 

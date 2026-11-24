@@ -14,18 +14,30 @@
 ## 命令
 
 ```bash
+node tools/ci.mjs              # 统一门禁：7 步串起来跑（推荐入口）
+node tools/ci.mjs --strict     # 要求必须有浏览器
+node tools/ci.mjs --no-smoke   # 只跑静态检查与自检（CI 的 Node 24 车道）
+
+# 单步
 node --check civil-servant-training-assistant.user.js   # 单文件语法
-node tests/selftest.mjs                     # 元数据 + 纯函数自检 + 题库一致性
-node tools/check-data.mjs                   # 数据完整性与覆盖率
-node tools/check-docs.mjs                   # 链接、围栏、文档数字
-node tools/check-syntax.mjs                 # 全仓库 .mjs 与用户脚本语法
-node tools/check-workflows.mjs              # CI 配置引用的脚本是否存在
-node tests/page-smoke.mjs                   # 离线 fixture 的端到端冒烟
-node tools/ci.mjs                           # 以上全部串起来
-node tools/ci.mjs --strict                  # 要求必须有浏览器
+node tools/check-syntax.mjs    # 全仓库 .mjs 与用户脚本语法
+node tools/check-docs.mjs      # 链接、围栏、文档数字、仓库地址占位符
+node tests/selftest.mjs        # 元数据 + 纯函数自检 + 门禁步数 + 题库一致性
+node tools/check-data.mjs      # 数据完整性与覆盖率
+node tests/merge-smoke.mjs     # 多标签页合并语义（读盘合并 / 清空墓碑）
+node tools/check-workflows.mjs # CI 配置引用的脚本、action 与权限
+node tests/page-smoke.mjs      # 离线 fixture 的端到端冒烟
+
+# 发版与配图
+node tools/release.mjs --dry-run    # 发版前校验（不打 tag、不联网跑门禁）
+node tools/release.mjs              # 本地打 annotated tag（不 push）
+node tools/generate-docs-images.mjs # 重新生成三张配图
+node tools/check-external-links.mjs # 文档外链（需网络，默认不进 CI）
 ```
 
-`package.json` 里另有等价入口：`npm test`、`npm run check`、`npm run smoke`、`npm run ci`。
+`package.json` 里另有等价入口：`npm test`、`npm run check`、`npm run check:external`、`npm run smoke`、`npm run ci`、`npm run docs:images`、`npm run release`。
+
+**`tools/ci.mjs` 的 `ALL_STEPS` 是步骤清单的唯一事实来源**，`tests/selftest.mjs` 会校验文档里写的「门禁 N 步」与它一致，改了门禁忘记改文档会直接失败。
 
 ## 测试分层
 
@@ -34,6 +46,7 @@ node tools/ci.mjs --strict                  # 要求必须有浏览器
 | 内置自检 | 脚本内 `selfTest()` | 无 | 归一化、指纹、相似度、CSV 解析等纯函数 |
 | Node 自检 | `tests/selftest.mjs` | Node | 元数据、权限、体积、安全基线、题库与脚本内嵌数据一致 |
 | 数据检查 | `tools/check-data.mjs` | Node | 题型合法、答案属于该题选项、字母与文本对齐、覆盖率 |
+| 合并冒烟 | `tests/merge-smoke.mjs` | Node | 读盘合并语义、清空墓碑、脏数据容错、与内置题库的交互 |
 | 文档检查 | `tools/check-docs.mjs` | Node | 相对链接、代码围栏、README 数字与数据文件一致 |
 | 页面冒烟 | `tests/page-smoke.mjs` | Chromium | 真实结构 fixture：解析 5 题、逐项填答、多选收窄、blur 拦截、诊断包结构 |
 
@@ -159,6 +172,18 @@ GITHUB_TOKEN=xxx node tools/push-to-github.mjs --owner <用户名> [--repo <仓�
 | `probe/` | 探测期的抓取脚本、平台前端脚本副本、抓包结果 | 追溯题库来源；详见 `probe/README.md` |
 
 `probe/` 里的会话 cookie 与 token 已清空内容。两者都可以直接删除，不影响脚本运行与 CI——所有检查只读 `data/`、`tests/`、`tools/`。
+
+## 合并多份题库
+
+多人各判一部分答案时，用合并工具合成一份，避免手工拼 JSON 出错：
+
+```bash
+node tools/merge-bank.mjs a.json b.json --out data/bank-seed.json
+node tools/merge-bank.mjs a.json b.json --dry      # 只报告冲突，不写盘
+```
+
+输入自动识别三种格式：仓库的紧凑四元组、面板导出的 `{bank:{...}}`、对象数组。
+同题干不同答案会列为冲突并返回非零退出码——**冲突要人工复核**，同一道题不该有两个正确答案。
 
 ## 配图
 

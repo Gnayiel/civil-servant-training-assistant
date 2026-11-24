@@ -1,0 +1,50 @@
+name: 自检
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 只读仓库内容即可，不给 token 多余权限
+permissions:
+  contents: read
+
+# 同一分支连续推送时取消旧的一次，省 runner 时间
+concurrency:
+  group: selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  selftest:
+    # Node 22 是 engines 下限，Node 24 是当前最新 LTS；两边都跑，避免只在某个版本可用的 API 溜进工具链。
+    # 浏览器冒烟与 Node 版本基本无关：22 跑完整门禁，24 跑快速门禁（语法/文档/自检/数据/工作流），
+    # 既保留双版本兼容性检查，又不重复启动两次 Chromium。
+    # 只保留 node-version 一个 matrix 键：check-run 名才会稳定是 selftest (22)/(24)，
+    # 加第二个键会让 GitHub 拼成 selftest (22, true)，required checks 就对不上。
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['22', '24']
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      # 第三方 action 全部 pin 到 commit SHA（行尾注释是版本号）；
+      # 升级由 .github/dependabot.yml 自动开 PR 完成。
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          # 这个 job 只读：不把 GITHUB_TOKEN 留在 .git/config 里
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      # 统一门禁：语法、文档链接、内置断言、数据一致性、工作流检查、页面冒烟。
+      # 与本地 `npm run ci`、release.yml 共用同一份步骤清单，不再手抄；
+      # --strict 让缺浏览器时直接失败而不是静默跳过。
+      - name: 统一门禁（含浏览器冒烟）
+        if: matrix.node-version == '22'
+        run: node tools/ci.mjs --strict
+      - name: 快速门禁（Node 24 车道）
+        if: matrix.node-version == '24'
+        run: node tools/ci.mjs --no-smoke
