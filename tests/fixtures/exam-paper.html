@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>试卷（离线 fixture，取自 courseId=1246 的真实结构）</title>
+<script>
+// 平台 gradeExamInfo.js 里被 onclick 调用的两个函数，原样复刻
+function danxOnClick(qnum) { var el = document.getElementById('click_li_' + qnum); if (el) el.className += ' li_m'; }
+function duoxOnClick(name, qnum) {
+  var dxs = document.getElementsByName(name), on = false;
+  for (var i = 0; i < dxs.length; i++) { if (dxs[i].checked) { on = true; break; } }
+  var el = document.getElementById('click_li_' + qnum);
+  if (!el) return;
+  if (on) { if (!/li_m/.test(el.className)) el.className += ' li_m'; }
+  else { el.className = el.className.replace(/ li_m/g, ''); }
+}
+</script>
+</head>
+<body>
+<form id="examInfoFrom" name="examInfoFrom" method="post" action="/gradeExam/gradeExamSave.do">
+  <input type="hidden" value="1246" name="courseId">
+  <input type="hidden" value="10" id="testTime" name="testTime">
+  <input type="hidden" value="15" name="gradeId" id="gradeId">
+  <input type="hidden" name="jsTime" id="jsTime" value="00:00:00">
+  <div class="jishi"><span id="hh">00</span>:<span id="mm">00</span>:<span id="ss">00</span></div>
+<div class="shiti">
+			<div style="width: 720px; float: left;">
+				
+					<div class="shiti_l">
+						<h2>一、单选题（共2道题，下列各题选项中，只有一个正确答案）</h2>
+						
+							<dl class="danxuan">
+								<dt>
+									<span>1.</span>党的十七大提出将社会建设纳入总体布局，使 “三位一体” 发展为 “四位一体”，其中 “三位一体” 不包括（ ）。
+									（20分）
+								</dt>
+								
+									<dd>A.经济建设</dd>
+								
+								
+									<dd>B.政治建设</dd>
+								
+								
+									<dd>C.社会建设</dd>
+								
+								
+									<dd>D.文化建设</dd>
+								
+								
+								
+								
+								
+							</dl>
+							<div class="xuxiang">
+								
+									<label><input type="radio"
+										name="danxuan9163" value="A"
+										onclick="danxOnClick('9163')" />A</label>
+								
+								
+									<label><input type="radio"
+										name="danxuan9163" value="B"
+										onclick="danxOnClick('9163')" />B</label>
+								
+								
+									<label><input type="radio"
+										name="danxuan9163" value="C"
+										onclick="danxOnClick('9163')" />C</label>
+								
+								
+									<label><input type="radio"
+										name="danxuan9163" value="D"
+										onclick="danxOnClick('9163')" />D</label>
+								
+								
+								
+								
+								
+							</div>
+						
+							<dl class="danxuan">
+								<dt>
+									<span>2.</span>新时代我国社会主要矛盾是（ ）。
+									（20分）
+								</dt>
+								
+									<dd>A.人民日益增长的物质文化需要同落后的社会生产之间的矛盾</dd>
+								
+								
+									<dd>B.人民日益增长的美好生活需要和不平衡不充分的发展之间的矛盾</dd>
+								
+								
+									<dd>C.经济基础与上层建筑之间的矛盾</dd>
+								
+								
+									<dd>D.生产力与生产关系之间的矛盾</dd>
+								
+								
+								
+								
+								
+							</dl>
+							<div class="xuxiang">
+								
+									<label><input type="radio"
+										name="danxuan9164" value="A"
+										onclick="danxOnClick('9164')" />A</label>
+								
+								
+									<label><input type="radio"
+										name="danxuan9164" value="B"
+										onclick="danxOnClick('9164')" />B</label>
+								
+								
+									<label><input type="radio"
+										name="danxuan9164" value="C"
+										onclick="danxOnClick('9164')" />C</label>
+								
+								
+									<label><input type="radio"
+										name="danxuan9164" value="D"
+										onclick="danxOnClick('9164')" />D</label>
+								
+								
+								
+								
+								
+							</div>
+						
+					</div>
+				
+				
+					<div class="shiti_l shiti_2">
+						<h2>二、多选题（共1道题，下列各题选项中，可能有多个正确答案）</h2>
+						
+							<dl class="danxuan">
+								<dt>
+									<span>1.</span>居民可支配收入的构成包括（ ）。
+									（20分）
+								</dt>
+								
+									<dd>A.工资性收入</dd>
+								
+								
+									<dd>B.经营性收入</dd>
+								
+								
+									<dd>C.财产性收入</dd>
+								
+								
+									<dd>D.转移收入</dd>
+								
+								
+								
+								
+								
+							</dl>
+							<div class="xuxiang">
+								
+									<label><input type="checkbox"
+										name="duoxuan9165" value="A"
+										onclick="duoxOnClick(this.name,'9165')" />A</label>
+								
+								
+									<label><input type="checkbox"
+										name="duoxuan9165" value="B"
+										onclick="duoxOnClick(this.name,'9165')" />B</label>
+								
+								
+									<label><input type="checkbox"
+										name="duoxuan9165" value="C"
+										onclick="duoxOnClick(this.name,'9165')" />C</label>
+								
+								
+									<label><input type="checkbox"
+										name="duoxuan9165" value="D"
+										onclick="duoxOnClick(this.name,'9165')" />D</label>
+								
+								
+								
+								
+								
+							</div>
+						
+					</div>
+				
+				
+					<div class="shiti_l">
+						<h2>三、判断题（共2道题，请判断下列各题是否正确）</h2>
+						
+							<div class="shiti_l">
+								<dl class="danxuan">
+									<dt>
+										<span>1.</span>平安中国建设的核心是满足人民的安全民生需求。
+										（20分）
+									</dt>
+								</dl>
+								<div class="xuxiang">
+									<label><input type="radio" value="1"
+										name="panduan9166"
+										onclick="danxOnClick('9166')" />A.对</label> <label><input
+										type="radio" value="0" name="panduan9166"
+										onclick="danxOnClick('9166')" />B.错</label>
+								</div>
+							</div>
+						
+							<div class="shiti_l">
+								<dl class="danxuan">
+									<dt>
+										<span>2.</span>调节过高收入就是要打击所有高收入群体。
+										（20分）
+									</dt>
+								</dl>
+								<div class="xuxiang">
+									<label><input type="radio" value="1"
+										name="panduan9167"
+										onclick="danxOnClick('9167')" />A.对</label> <label><input
+										type="radio" value="0" name="panduan9167"
+										onclick="danxOnClick('9167')" />B.错</label>
+								</div>
+							</div>
+						
+					</div>
+				
+				
+				
+			</div>
+			</div></div>
+</form>
+</body>
+</html>

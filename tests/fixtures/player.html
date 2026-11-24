@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>课程播放（离线 fixture）</title>
+<script>
+  window.__blurCalls = 0;
+  function isLeaveOrEnter() { window.__blurCalls += 1; }
+  window.onblur = isLeaveOrEnter;
+</script>
+</head>
+<body style="background:#333">
+  <div class="top"><p><span id="cname"></span></p></div>
+  <div class="middle"><center><div id="container"></div></center></div>
+  <video id="player" muted playsinline></video>
+</body>
+</html>

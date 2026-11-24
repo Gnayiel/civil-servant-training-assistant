@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>面板配图（离线复刻，用于生成 docs/panel.png）</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: #eef1f5;
+    font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    color: #333; display: flex; padding: 40px 30px 40px 36px;
+  }
+  .paper { width: 830px; background: #fff; border-radius: 4px; box-shadow: 0 2px 18px rgba(0,0,0,.08); }
+  .paper-head { padding: 20px 26px 14px; border-bottom: 1px dashed #d8dde5; }
+  .paper-head h1 { margin: 0 0 8px; font-size: 18px; font-weight: 600; color: #1a2b4c; }
+  .paper-head p { margin: 0; font-size: 12.5px; color: #7b8494; line-height: 1.8; }
+  .body { display: flex; }
+  .main { flex: 1; padding: 16px 24px 24px; min-width: 0; }
+  .sec { font-size: 13.5px; font-weight: 600; color: #1a2b4c; margin: 16px 0 8px; }
+  .q { font-size: 13px; line-height: 1.85; color: #2c3444; margin: 8px 0 4px; }
+  .q .no { color: #8a93a3; margin-right: 2px; }
+  .q .score { color: #a3abb8; font-size: 11.5px; }
+  .opts { margin: 0 0 2px 16px; }
+  .opt { display: block; font-size: 12.5px; line-height: 1.9; color: #3a4354; }
+  .opt i { font-style: normal; color: #8a93a3; margin-right: 6px; }
+  .opt.on, .opt.on i { color: #1a5fd0; }
+  .side { width: 150px; border-left: 1px solid #edf0f4; padding: 18px 14px; flex-shrink: 0; }
+  .timer { text-align: center; font-size: 20px; font-weight: 600; color: #d0453b; letter-spacing: 1px; margin-bottom: 14px; font-variant-numeric: tabular-nums; }
+  .cart dt { font-size: 11.5px; color: #7b8494; margin: 10px 0 5px; }
+  .cart dd { margin: 0; display: flex; gap: 5px; flex-wrap: wrap; }
+  .cart b { width: 24px; height: 24px; border-radius: 50%; background: #eef1f5; color: #5d6675; font-size: 11.5px; font-weight: 400; display: flex; align-items: center; justify-content: center; }
+  .cart b.done { background: #1a5fd0; color: #fff; }
+</style>
+</head>
+<!--
+  用途：生成 README 里的面板配图（docs/panel.png）。
+  做法：把用户脚本内联进本页，并另加一段隐藏的真实结构试卷 DOM，
+        面板便会像在真实页面上一样识别到 5 题并自动作答，然后无头截图。
+  说明：页面文字取自题库真实题干，未使用任何账号或会话凭证。
+  生成脚本见 docs/DEVELOPMENT.md 的「配图」一节。
+-->
+<body>
+  <div class="paper">
+    <div class="paper-head">
+      <h1>《习近平关于社会主义社会建设论述》（上）</h1>
+      <p>考试时间：10 分钟 · 全卷题数：5 道题 · 卷面总分：100 分 · 考试次数无限制，考过为止</p>
+    </div>
+    <div class="body">
+      <div class="main">
+        <div class="sec">一、单选题（共 2 道题，下列各题选项中，只有一个正确答案）</div>
+        <div class="q"><span class="no">1.</span>党的十七大提出将社会建设纳入总体布局，使“三位一体”发展为“四位一体”，其中“三位一体”不包括（　）。<span class="score">（20分）</span></div>
+        <div class="opts">
+          <label class="opt"><i>A.</i>经济建设</label>
+          <label class="opt"><i>B.</i>政治建设</label>
+          <label class="opt on"><i>C.</i>社会建设</label>
+          <label class="opt"><i>D.</i>文化建设</label>
+        </div>
+        <div class="q"><span class="no">2.</span>新时代我国社会主要矛盾是（　）。<span class="score">（20分）</span></div>
+        <div class="opts">
+          <label class="opt"><i>A.</i>人民日益增长的物质文化需要同落后的社会生产之间的矛盾</label>
+          <label class="opt on"><i>B.</i>人民日益增长的美好生活需要和不平衡不充分的发展之间的矛盾</label>
+          <label class="opt"><i>C.</i>经济基础与上层建筑之间的矛盾</label>
+          <label class="opt"><i>D.</i>生产力与生产关系之间的矛盾</label>
+        </div>
+        <div class="sec">二、多选题（共 1 道题，下列各题选项中，可能有多个正确答案）</div>
+        <div class="q"><span class="no">1.</span>居民可支配收入的构成包括（　）。<span class="score">（20分）</span></div>
+        <div class="opts">
+          <label class="opt on"><i>A.</i>工资性收入</label>
+          <label class="opt on"><i>B.</i>经营性收入</label>
+          <label class="opt on"><i>C.</i>财产性收入</label>
+          <label class="opt on"><i>D.</i>转移收入</label>
+        </div>
+        <div class="sec">三、判断题（共 2 道题，请判断下列各题是否正确）</div>
+        <div class="q"><span class="no">1.</span>平安中国建设的核心是满足人民的安全民生需求。<span class="score">（20分）</span></div>
+        <div class="opts">
+          <label class="opt on"><i>A.</i>对</label>
+          <label class="opt"><i>B.</i>错</label>
+        </div>
+        <div class="q"><span class="no">2.</span>调节过高收入就是要打击所有高收入群体。<span class="score">（20分）</span></div>
+        <div class="opts">
+          <label class="opt"><i>A.</i>对</label>
+          <label class="opt on"><i>B.</i>错</label>
+        </div>
+      </div>
+      <div class="side">
+        <div class="timer">09:47</div>
+        <dl class="cart">
+          <dt>一、单选题</dt>
+          <dd><b class="done">1</b><b class="done">2</b></dd>
+          <dt>二、多选题</dt>
+          <dd><b class="done">1</b></dd>
+          <dt>三、判断题</dt>
+          <dd><b class="done">1</b><b class="done">2</b></dd>
+        </dl>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

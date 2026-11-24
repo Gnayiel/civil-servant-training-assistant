@@ -1,0 +1,60 @@
+name: 缺陷报告
+description: 报页面改版、解析错误、播放未解锁等问题
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请先看 [常见问题](../blob/main/README.md#常见问题) 与 [SECURITY.md](../blob/main/SECURITY.md)。
+        **请勿粘贴账号、密码、cookie、JSESSIONID 或含姓名单位的截图。**
+
+  - type: input
+    id: version
+    attributes:
+      label: 脚本版本
+      description: 面板标题旁的 vX.Y.Z
+      placeholder: v1.0.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: page
+    attributes:
+      label: 出问题的页面
+      options:
+        - 试卷页（考试）
+        - 播放页（视频）
+        - 课程列表 / 用户中心
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 期望发生什么，实际发生了什么
+      placeholder: |
+        期望：进入考试后自动作答
+        实际：面板显示「未检测到试卷」
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 面板日志
+      description: 面板「日志」分组里的最后十几行
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: html
+    attributes:
+      label: 页面结构片段（可选，请脱敏）
+      description: 出问题区域的外层 HTML，去掉姓名、单位与任何 token
+      render: html
+    validations:
+      required: false

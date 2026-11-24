@@ -1,0 +1,25 @@
+# 忽略本地工作产物与参考副本，避免误入库
+
+# 依赖（本项目不声明依赖，仅防误装）
+node_modules/
+package-lock.json
+npm-debug.log*
+
+# 测试与探测的临时产物
+.tmp-smoke/
+.tmp-output/
+*.log
+
+# 本地探测现场：抓包结果、cookie、加密脚本副本，含个人会话信息
+probe/
+
+# 第三方参考实现（法宣在线插件），仅本地比对用，不随本仓库分发
+_ref/
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+.Trash-0/

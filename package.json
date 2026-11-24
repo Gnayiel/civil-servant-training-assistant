@@ -1,0 +1,35 @@
+{
+  "name": "civil-servant-training-assistant",
+  "version": "1.1.0",
+  "private": true,
+  "description": "公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。内置甘肃省适配，其他省份可扩展。",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node tests/selftest.mjs && node tools/check-data.mjs",
+    "check": "node tools/check-syntax.mjs && node tools/check-docs.mjs && node tools/check-data.mjs && node tests/selftest.mjs",
+    "smoke": "node tests/page-smoke.mjs",
+    "smoke:strict": "node tests/page-smoke.mjs --require-browser",
+    "ci": "node tools/ci.mjs"
+  },
+  "keywords": [
+    "tampermonkey",
+    "userscript",
+    "civil-servant",
+    "training",
+    "automation",
+    "gansu",
+    "question-bank"
+  ],
+  "author": "Gnayiel",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Gnayiel/civil-servant-training-assistant.git"
+  },
+  "homepage": "https://github.com/Gnayiel/civil-servant-training-assistant#readme",
+  "bugs": {
+    "url": "https://github.com/Gnayiel/civil-servant-training-assistant/issues"
+  }
+}
