@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.3.9
+// @version      1.3.10
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
 // @match        https://gwypx.gsdj.gov.cn/*
 // @match        http://gwypx.gsdj.gov.cn/*
-// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@latest/civil-servant-training-assistant.user.js
+// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@v1.3.10/civil-servant-training-assistant.user.js
 // @updateURL    https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@latest/civil-servant-training-assistant.user.js
 // @run-at       document-idle
 // @grant        GM_setValue
@@ -33,7 +33,7 @@
 
   // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
   // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.9';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.10';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';

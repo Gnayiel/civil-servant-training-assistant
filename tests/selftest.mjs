@@ -78,13 +78,13 @@ ok('@connect 覆盖 GitHub Releases API', many('connect').includes('api.github.c
 
 // 自动更新地址必须国内可达。raw.githubusercontent.com 在中国大陆经常被阻断，
 // 用它做 @updateURL 会让油猴的版本检查静默失败，用户永远收不到更新。
+// （两个地址该不该一致，见下面的「移动指针 / 固定指针」一组断言——已不再要求一致。）
 const updateUrl = one('updateURL');
-const downloadUrl = one('downloadURL');
 if (updateUrl) {
   ok('@updateURL 用 https', /^https:\/\//.test(updateUrl), updateUrl);
   ok('@updateURL 不用 raw.githubusercontent.com（国内不可达）',
     !/raw\.githubusercontent\.com/.test(updateUrl), updateUrl);
-  ok('@downloadURL 与 @updateURL 一致', downloadUrl === updateUrl, downloadUrl);
+  ok('@downloadURL 用 https', /^https:\/\//.test(one('downloadURL')), one('downloadURL'));
 }
 
 // package.json 是版本号的第二个副本，只写不校验迟早漂移
@@ -111,19 +111,32 @@ ok('未把 innerHTML 拼进动态值（只允许静态模板）',
   (code.match(/innerHTML\s*=/g) || []).length <= 2,
   `出现 ${(code.match(/innerHTML\s*=/g) || []).length} 次`);
 ok('没有硬编码账号密码', !/dongyu/i.test(code) && !/820330/.test(code));
-// 更新地址必须指向「最新 tag」，不能指向分支。
-// 实测：main 已是 1.3.8 时 jsDelivr 的 @main 仍在返回 1.2.0（max-age 7 天、s-maxage 12 小时，
-// 且分支缓存键不含查询串，加时间戳也绕不过）。用分支做 @updateURL 等于自动更新永久失效，
-// 用分支做 @downloadURL 更糟 —— 用户点「重新安装」会被静默降级到旧版本。
-// 只看 UserScript 头，别把正文注释里提到 @updateURL 的地方也算进来
+// 更新地址的两个角色必须分工（都实测过才定的）：
+//
+// @updateURL 要当「移动指针」，用来发现新版本。必须用 @latest 解析到最新 tag，
+//   不能用 @main —— 分支指针在 CDN 上陈旧得离谱：实测 main 已是 1.3.9 时，
+//   @main 先后返回过 1.2.0 和 1.1.0（不同边缘节点不一致），
+//   响应头 max-age=604800（7 天）/ s-maxage=43200（12 小时），
+//   且分支缓存键不含查询串，加 ?t= 时间戳也绕不过。
+//
+// @downloadURL 要当「固定指针」，用来重装当前版本。必须钉到本版 tag，
+//   否则在 @latest 的解析缓存窗口内（实测 tag 打完后仍停在上一版），
+//   用户点「重新安装」会被静默降级。钉死后重装永远拿到与已装一致的版本；
+//   而更新流程拿的是 @latest 取回的新文件，里面声明的是新 tag，所以仍能升级。
+// 只看 UserScript 头，别把正文注释里提到这两个字段的地方也算进来
 const header = (code.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/) || [''])[0];
-const urlLines = header.split('\n').filter((l) => /^\s*\/\/\s*@(?:update|download)URL/.test(l));
-ok('声明了 @updateURL 与 @downloadURL', urlLines.length === 2, `${urlLines.length} 条`);
-ok('更新地址用 @latest（tag），不用分支',
-  urlLines.length === 2 && urlLines.every((l) => /@latest\//.test(l)),
-  urlLines.map((l) => l.trim().slice(0, 90)).join(' | '));
-ok('更新地址不出现分支名 @main/@master',
-  !urlLines.some((l) => /@(?:main|master)\//.test(l)), '仍有分支地址');
+const version = (/@version\s+(\S+)/.exec(header) || [])[1] || '';
+const urlOf = (key) => {
+  const m = new RegExp('^\\s*//\\s*@' + key + '\\s+(\\S+)', 'm').exec(header);
+  return m ? m[1] : '';
+};
+const upd = urlOf('updateURL');
+const dl = urlOf('downloadURL');
+ok('声明了 @updateURL 与 @downloadURL', !!upd && !!dl, `${upd} | ${dl}`);
+ok('@updateURL 用 @latest（移动指针），不用分支',
+  /@latest\//.test(upd) && !/@(?:main|master)\//.test(upd), upd);
+ok('@downloadURL 钉到本版 tag（固定指针，防重装降级）',
+  !!version && dl.includes('@v' + version + '/'), `${dl} vs v${version}`);
 ok('没有把 cookie/token 写进日志', !/document\.cookie/.test(code));
 
 // ------------------------------------------------------------------ 加载

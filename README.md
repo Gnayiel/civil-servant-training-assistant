@@ -2,7 +2,7 @@
 
 面向各地「公务员网络培训」平台的 Tampermonkey 用户脚本：自动作答试卷、解除「切窗口就暂停」的播放限制、本地题库积累与导入导出。
 
-![version](https://img.shields.io/badge/version-1.3.9-2b5fd9)
+![version](https://img.shields.io/badge/version-1.3.10-2b5fd9)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![node](https://img.shields.io/badge/node-%E2%89%A522-3c873a)
 ![deps](https://img.shields.io/badge/dependencies-0-success)
@@ -79,12 +79,21 @@
 
 - **油猴自带的更新检查**：读 `@updateURL`。指向 jsDelivr 而不是 `raw.githubusercontent.com`，因为后者在中国大陆经常不可达——用它做更新地址时版本检查会静默失败，永远收不到新版本。
 
-  地址必须用 **`@latest`**（解析到最新 tag），不能用 `@main`。分支指针在 CDN 上陈旧得非常久：
-  实测 `main` 已是 1.3.8 时，`@main` 仍在返回 **1.2.0**（落后 6 个版本），
-  响应头 `max-age=604800`（7 天）、`s-maxage=43200`（12 小时），且分支缓存键不含查询串
-  ——加 `?t=` 时间戳也绕不过。用分支做 `@updateURL` 等于自动更新永久失效；
-  用分支做 `@downloadURL` 更糟：用户点「重新安装」会被**静默降级**到旧版本。
-  tag 不可变、每个版本是独立 URL，所以 `@latest` 没有这个问题。
+  两个地址分工不同，都不能用分支（`@main`）：
+
+  | 字段 | 指向 | 为什么 |
+  | --- | --- | --- |
+  | `@updateURL` | `@latest`（解析到最新 tag） | 移动指针，用来发现新版本 |
+  | `@downloadURL` | `@v{当前版本}`（本版 tag） | 固定指针，重装永远拿到与已装一致的版本 |
+
+  分支指针在 CDN 上陈旧得离谱：实测 `main` 已是 1.3.9 时，`@main` 先后返回过
+  **1.2.0 和 1.1.0**（不同边缘节点不一致），响应头 `max-age=604800`（7 天）、
+  `s-maxage=43200`（12 小时），且分支缓存键不含查询串——加 `?t=` 时间戳也绕不过。
+  用分支做 `@updateURL` 等于自动更新永久失效。
+
+  `@latest` 也有一小段解析缓存（实测 tag 打完后仍停在上一版），所以 `@downloadURL`
+  必须钉到本版 tag：否则在这个窗口里点「重新安装」，油猴会拿到旧文件把用户**静默降级**。
+  钉死后重装无害；升级流程取的是 `@latest` 拿回的新文件，里面声明的是新 tag，照样能升。
 - **面板里的「检查更新」**：并行查 `@updateURL` 与 GitHub Releases API，取两者较高版本。Releases API 不走 CDN，打完 tag 立刻反映，所以手动点一次就能拿到确定结论，不受 12 小时缓存影响。一个源不可达时日志会写明结果出自哪个源。
 
 > 分支缓存各节点并不同步：实测同一时刻 `cdn.jsdelivr.net` 已是新版本，`fastly` / `gcore` / `testingcf` 仍停在旧版本。加 `?t=` 时间戳或 `Cache-Control: no-cache` 都绕不过——缓存键不含查询串。
