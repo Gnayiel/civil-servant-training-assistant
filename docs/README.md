@@ -24,4 +24,4 @@
 - **相对链接必须能打开**：本地文档之间用相对路径（如 `DEVELOPMENT.md`、`../SECURITY.md`），不要写死分支或提交 URL；`node tools/check-docs.mjs` 会检查文件是否存在。
 - **命令按最终结构写**：测试在 `tests/`，工具在 `tools/`；门禁命令以 `package.json` 的 scripts 为准，不要手抄旧路径。
 - **设置类内容标注状态**：GitHub 网页设置无法由代码保证，涉及仓库设置时写「建议 / 需人工确认」，不要声称已经配置。
-- **图片不要手工替换**：`docs/panel.png` 与两张 `.webp` 由 `npm run docs:images` 重新生成，见 [IMAGE_PIPELINE.md](IMAGE_PIPELINE.md)。
+- **图片不要手工替换**：`docs/panel.webp` 与两张社交预览 由 `npm run docs:images` 重新生成，见 [IMAGE_PIPELINE.md](IMAGE_PIPELINE.md)。

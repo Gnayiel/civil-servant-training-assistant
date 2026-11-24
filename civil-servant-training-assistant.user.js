@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.3.1
+// @version      1.3.2
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
@@ -33,7 +33,7 @@
 
   // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
   // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.1';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.2';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';
@@ -1463,7 +1463,7 @@
     if (!forceTwo && !opts.noCache) {
       const hit = cacheLookup(answerCache, cacheKey);
       if (hit) {
-        log(`⚡ 会话缓存命中：${hit.letters}（${Math.round(hit.conf * 100)}%），本题不再联网`);
+        log(`会话缓存命中：${hit.letters}（${Math.round(hit.conf * 100)}%），本题不再联网`);
         return {
           cand: { letters: hit.letters, conf: hit.conf, srcs: ['cache'], why: hit.why || '会话缓存' },
           notes: ['会话缓存命中（本场同题已查过）'],
@@ -1816,7 +1816,7 @@
     if (autoCloseTimer) { clearTimeout(autoCloseTimer); autoCloseTimer = null; }
     const sec = +CONFIG.autoCloseSec || 0;
     if (!sec) return;
-    log(`🕒 ${sec} 秒后自动关闭本页（可在「题库与本场」里改成不关）`);
+    log(`${sec} 秒后自动关闭本页（可在「题库与本场」里改成不关）`);
     autoCloseTimer = setTimeout(() => {
       autoCloseTimer = null;
       try { window.close(); } catch (e) { /* 浏览器不允许，忽略 */ }
@@ -2657,15 +2657,19 @@
       let bytes = 0;
       try { bytes = JSON.stringify(bankAll).length; } catch (e) { bytes = 0; }
       const kb = (bytes / 1024).toFixed(bytes >= 102400 ? 0 : 1);
+      // 纯文本，不带 emoji —— 与法宣的面板成品一致。
+      // emoji 在这里是纯装饰，却引入一串真实麻烦：无头浏览器要额外装 emoji 字体、
+      // 字体栈顺序写错会让整段中文不绘制、Noto Emoji 又是单色字形，
+      // 在深色面板里看着像方块。去掉之后任何机器渲染结果都一样。
       // 本脚本没有独立的错题本与墓碑表（清空用单个时间戳实现），
-      // 所以括号里比法宣少两项——这是唯一一处刻意与法宣不同的文案，README 有说明。
-      el.textContent = `📊 题库 ${n} 题${bits.length ? `（${bits.join(' · ')}）` : ''}`
-        + ` · 💾 ${kb} KB（题库 ${n}）`;
+      // 所以括号里比法宣少两项——这一处文案差异 README 有说明。
+      el.textContent = `题库 ${n} 题${bits.length ? `（${bits.join(' · ')}）` : ''}`
+        + ` · ${kb} KB（题库 ${n}）`;
       if (!el2) return;
       const mode = CONFIG.answerMode === 'ai' ? 'AI智能' : '百度搜索';
-      const run = examRunning ? (pausedFlag ? '⏸️ 已暂停' : '▶️ 进行中') : '⏹️ 已停止';
-      const dbgOn = CONFIG.debug ? ' · 🔍调试' : '';
-      el2.textContent = `🎛 模式：${mode} · ${run} · 已答 ${history.length}${totalQ ? '/' + totalQ : ''}${dbgOn}`;
+      const run = examRunning ? (pausedFlag ? '已暂停' : '进行中') : '已停止';
+      const dbgOn = CONFIG.debug ? ' · 调试' : '';
+      el2.textContent = `模式：${mode} · ${run} · 已答 ${history.length}${totalQ ? '/' + totalQ : ''}${dbgOn}`;
     }
 
     // ---------------------------------------------------------------- 折叠
@@ -2827,7 +2831,7 @@
       if (examRunning) {
         examAbort = true;
         pausedFlag = false;
-        log(`⏹️ 已停止（已答 ${history.length} 题）· 点「开始」可从当前题继续`, 'warn');
+        log(`已停止（已答 ${history.length} 题）· 点「开始」可从当前题继续`, 'warn');
         api.setState('已停止');
         syncRunBtns();
         return;
@@ -2837,7 +2841,7 @@
         api.setState('未检测到题目');
         return;
       }
-      log('▶️ 开始答题');
+      log('开始答题');
       await runExam();
     });
 
@@ -2845,8 +2849,8 @@
     on('fx-pause', () => {
       if (!examRunning) { log('当前没有在答题，无需暂停'); return; }
       pausedFlag = !pausedFlag;
-      log(pausedFlag ? '⏸️ 已暂停：当前题填完后停在原处，点「继续」接着答' : '▶️ 已继续');
-      api.setState(pausedFlag ? '⏸️ 已暂停' : '答题中');
+      log(pausedFlag ? '已暂停：当前题填完后停在原处，点「继续」接着答' : '已继续');
+      api.setState(pausedFlag ? '已暂停' : '答题中');
       syncRunBtns();
       updateStats();
     });
@@ -2894,7 +2898,7 @@
       syncToggles();
       syncBadges(['mode']);
       log(CONFIG.autoSubmit
-        ? '⚠️ 已开启自动交卷：答完最后一题会自动点「交卷」并确认'
+        ? '已开启自动交卷：答完最后一题会自动点「交卷」并确认'
         : '已关闭自动交卷：答完只提示，由你自己点交卷');
       if (CONFIG.autoSubmit) {
         api.showNotice('已开启自动交卷，答完会自动提交，请谨慎', 'warn');
@@ -2909,7 +2913,7 @@
       syncToggles();
       syncBadges(['mode']);
       updateStats();
-      log(CONFIG.debug ? '🔍 调试模式已打开，会输出通道明细' : '已关闭调试模式');
+      log(CONFIG.debug ? '调试模式已打开，会输出通道明细' : '已关闭调试模式');
     });
 
     on('fx-crosscheck', () => {
@@ -2917,7 +2921,7 @@
       store.set('cfg_forceCrossCheck', CONFIG.forceCrossCheck);
       syncToggles();
       log(CONFIG.forceCrossCheck
-        ? '🛡️ 已开启强制二源交叉验证：每题都会再查一个来源（更准，但更慢）'
+        ? '已开启强制二源交叉验证：每题都会再查一个来源（更准，但更慢）'
         : '已关闭强制二源交叉验证：只在主源把握不足或多选题时查第二源');
     });
 
@@ -3076,7 +3080,7 @@
         log('当前页面没有可解析的作答记录，交卷后再点「解析成绩」', 'warn');
         return;
       }
-      log('🔄 手动解析成绩…');
+      log('手动解析成绩…');
       reconcileAfterPass();
       api.refresh();
     });
@@ -3103,8 +3107,8 @@
       store.set('cfg_autoCloseSec', CONFIG.autoCloseSec);
       syncToggles();
       log(CONFIG.autoCloseSec
-        ? `🕒 成绩解析/入库完成后 ${CONFIG.autoCloseSec} 秒自动关闭本页`
-        : '🕒 已关闭「自动关闭本页」');
+        ? `成绩解析/入库完成后 ${CONFIG.autoCloseSec} 秒自动关闭本页`
+        : '已关闭「自动关闭本页」');
     });
 
     // 清空本场：清的是本场作答记录，题库不受影响（与法宣同语义）

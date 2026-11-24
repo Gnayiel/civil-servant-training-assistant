@@ -356,8 +356,10 @@ ok('面板有日志框', exam.hasLogBox === true);
 ok('版本徽章带 v 前缀', /^v\S+$/.test(exam.verBadge || ''), String(exam.verBadge));
 ok('面板标题为「公务员网络培训助手」', exam.title === '公务员网络培训助手', String(exam.title));
 ok('底部统计第一行是题库与存储占用',
-  /📊 题库 \d+ 题/.test(exam.siteLabel || '') && /KB/.test(exam.siteLabel || ''), String(exam.siteLabel));
+  /^题库 \d+ 题/.test(exam.siteLabel || '') && /KB/.test(exam.siteLabel || ''), String(exam.siteLabel));
 ok('统计行同时显示题库条数', /题库 \d+ 题/.test(exam.siteLabel || ''), String(exam.siteLabel));
+ok('统计行是纯文本，不含 emoji（渲染不依赖字体）',
+  !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(exam.siteLabel || ''), String(exam.siteLabel));
 ok('面板开关写入存储', exam.savedAutoSubmit === 'true', String(exam.savedAutoSubmit));
 ok('诊断包格式正确', exam.diagFormat === 'gwypx-diagnostics', String(exam.diagFormat));
 ok('诊断包识别页面类型为 exam', exam.diagPageType === 'exam', String(exam.diagPageType));

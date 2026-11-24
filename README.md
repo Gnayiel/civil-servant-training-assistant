@@ -2,17 +2,17 @@
 
 面向各地「公务员网络培训」平台的 Tampermonkey 用户脚本：自动作答试卷、解除「切窗口就暂停」的播放限制、本地题库积累与导入导出。
 
-![version](https://img.shields.io/badge/version-1.3.1-2b5fd9)
+![version](https://img.shields.io/badge/version-1.3.2-2b5fd9)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![node](https://img.shields.io/badge/node-%E2%89%A522-3c873a)
 ![deps](https://img.shields.io/badge/dependencies-0-success)
-![tests](https://img.shields.io/badge/checks-213%20assertions-success)
+![tests](https://img.shields.io/badge/checks-214%20assertions-success)
 
 单文件、无构建、无第三方依赖、无遥测。可在油猴里直接读完。
 
-![面板与试卷页](docs/panel.png)
+![面板](docs/panel.webp)
 
-<sub>面板叠在试卷页上：5 道题已全部作答，题库 442 条。图为离线复刻，未使用真实账号。</sub>
+<sub>面板特写，与「法宣在线助手」同一套界面。图为离线渲染，未使用真实账号。</sub>
 
 ## 支持范围
 

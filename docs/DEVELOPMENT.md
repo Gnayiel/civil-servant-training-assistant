@@ -187,20 +187,25 @@ node tools/merge-bank.mjs a.json b.json --dry      # 只报告冲突，不写盘
 
 ## 配图
 
-`docs/panel.png` 由 `docs/mockup.html` 生成，不用设计工具：
+`docs/panel.webp` 不需要设计工具，跑一条命令即可：
 
 ```bash
-# 1. 把脚本与一段隐藏的真实结构试卷 DOM 内联进 mockup，面板才会识别到题目
-# 2. 用无头浏览器按 2 倍像素密度截图
-chrome --headless --disable-gpu --no-sandbox --hide-scrollbars \
-  --window-size=1290,880 --force-device-scale-factor=2 \
-  --virtual-time-budget=14000 --screenshot=docs/panel.png \
-  file://$PWD/docs/mockup-live.html
+node tools/generate-docs-images.mjs        # 同时重拍两张社交预览
+DEBUG_SHOT=1 node tools/generate-docs-images.mjs   # 保留临时页面，便于查「图里元素是空的」
 ```
 
-要点：`--virtual-time-budget` 要大于脚本自动作答的等待时间（默认 1.2 秒起，含逐题间隔），否则截到的是空面板；`--force-device-scale-factor=2` 保证高分屏不糊。
+形态与「法宣在线助手」的 `docs/panel.webp` 一致：**只截面板本身**，不叠试卷背景。
 
-改面板样式后重拍一次，顺手确认配图里的「题库 N 条」与 `data/bank-seed.json` 一致。
+要点：
+
+- 页面里必须放一段 `display:none` 的最小试卷结构。脚本有启动守卫
+  （域名不在适配表、页面又看不出是培训平台 → 静默退出），没有这段结构就没有面板。
+- 面板是 `position: fixed` 挂右上角的，配图要它居中，就得往**影子根内**注入样式。
+  外部 `<style>` 进不了 Shadow DOM —— 这一点反复踩过。
+- `--virtual-time-budget` 要足够长，等脚本把面板渲染完（脚本里留了 2 秒）。
+- 面板文案是纯文本、不含 emoji，所以渲染不依赖任何 emoji 字体。
+
+改面板样式后重拍一次，顺手确认配图里的「题库 N 题」与 `data/bank-seed.json` 一致。
 
 ## 建仓清单
 

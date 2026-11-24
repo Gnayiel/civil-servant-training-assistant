@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 文档配图生成：把 docs/panel.png 与两张社交预览图从 HTML 重新渲染。
+ * 文档配图生成：把 docs/panel.webp 与两张社交预览图从 HTML 重新渲染。
  *
  *   node tools/generate-docs-images.mjs                 # 读 package.json 版本
  *   node tools/generate-docs-images.mjs --version 1.1.1
@@ -19,28 +19,6 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TMP = join(ROOT, '.tmp-docs-images');
 const SCRIPT = join(ROOT, 'civil-servant-training-assistant.user.js');
-// 面板统计行与日志里有 emoji（📊 💾 🎛 ⏹️）。无头 Chromium 默认不带 emoji 字体，
-// 缺字体时这些字符会渲染成豆腐块，README 第一张图就废了。
-// 渲染时临时挂一个 Noto Emoji（只影响配图，不进仓库、不改脚本）。
-
-// 面板统计行与日志里有 emoji（📊 💾 🎛 ⏹️）。无头 Chromium 不带 emoji 字体，
-// 缺字体时这些字符渲染成方块，README 第一张图就废了。
-// 做法是让系统装一个 Noto Emoji（fc-list 能看到即可），浏览器会直接从系统取。
-function ensureEmojiFont() {
-  const ok = (() => {
-    try {
-      return execFileSync('sh', ['-c', 'fc-list | grep -ci "Noto Emoji"'], { encoding: 'utf8' }).trim() !== '0';
-    } catch { return false; }
-  })();
-  if (!ok) {
-    console.warn('系统里没有 emoji 字体，统计行里的 📊💾🎛 会渲染成方块。安装：\n'
-      + '  mkdir -p ~/.local/share/fonts && curl -sL -o /tmp/ne.woff2 '
-      + 'https://fastly.jsdelivr.net/npm/@fontsource/noto-emoji@5.0.0/files/noto-emoji-emoji-400-normal.woff2\n'
-      + '  # woff2 需转 ttf 后才能被 fontconfig 识别（fonttools：TTFont(p).flavor=None; save(t)）\n'
-      + '  fc-cache -f ~/.local/share/fonts');
-  }
-  return ok;
-}
 
 function arg(name, dft = '') {
   const i = process.argv.indexOf('--' + name);
@@ -67,8 +45,6 @@ if (!FFMPEG) {
 }
 
 // ---------------------------------------------------------------- 读取动态数字
-ensureEmojiFont();
-
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 const version = arg('version', pkg.version);
 const seed = JSON.parse(readFileSync(join(ROOT, 'data', 'bank-seed.json'), 'utf8'));
@@ -87,128 +63,122 @@ console.log(`版本 ${version} · 题库 ${bankCount} 条 · 自检 ${selfTestCo
 mkdirSync(TMP, { recursive: true });
 
 // ---------------------------------------------------------------- 面板 HTML
-// 复刻试卷版式 + 内联脚本 + 一段隐藏的真实结构试卷 DOM，
-// 面板就会像在真实页面上一样识别到 5 题并自动作答。
+/**
+ * 纯面板特写，与「法宣在线助手」的 docs/panel.webp 同一形态：
+ * 只截面板本身，不合成试卷背景。视口 316×561、2 倍缩放 → 632×1122。
+ *
+ * 面板在脚本里是 `position: fixed` 挂在右上角的；配图需要它成为画面主体，
+ * 所以往影子根里塞一段 style 把它改成静态居中。外部选择器进不了 Shadow DOM，
+ * 只能这样改——这也是文档级 CSS 在这里完全无效的原因。
+ */
 function panelHtml() {
-  const mockup = readFileSync(join(ROOT, 'docs', 'mockup.html'), 'utf8');
-  const qs = uniq;
-  const want = [
-    '党的十七大提出将社会建设纳入总体布局',
-    '新时代我国社会主要矛盾是',
-    '居民可支配收入的构成包括',
-    '平安中国建设的核心是满足人民的安全民生需求',
-    '调节过高收入就是要打击所有高收入群体',
-  ];
-  const pick = [];
-  for (const w of want) {
-    const hit = qs.find((q) => q.q.startsWith(w));
-    if (hit) pick.push(hit);
-  }
-
-  const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  const groups = { single: [0, 1], multi: [2], judge: [3, 4] };
-  const typeTitle = { single: '一、单选题', multi: '二、多选题', judge: '三、判断题' };
-
-  let fake = '<form id="examInfoFrom" style="display:none">'
-    + '<input type="hidden" name="courseId" value="1246">'
-    + '<input type="hidden" name="testTime" value="10">'
-    + '<input type="hidden" name="gradeId" value="15">'
-    + '<input type="hidden" name="jsTime" value="00:00:00">'
-    + '<div class="shiti"><div>';
-
-  for (const [gtype, idxs] of Object.entries(groups)) {
-    fake += `<div class="shiti_l"><h2>${typeTitle[gtype]}</h2>`;
-    for (const i of idxs) {
-      const q = pick[i];
-      if (!q) continue;
-      const prefix = { single: 'danxuan', multi: 'duoxuan', judge: 'panduan' }[gtype];
-      const inp = gtype === 'multi' ? 'checkbox' : 'radio';
-      fake += `<dl class="danxuan"><dt><span>${i + 1}.</span>${esc(q.q)}（20分）</dt>`;
-      if (gtype !== 'judge') {
-        q.opts.forEach((o, j) => { fake += `<dd>${String.fromCharCode(65 + j)}.${esc(o)}</dd>`; });
-      }
-      fake += '</dl><div class="xuxiang">';
-      if (gtype === 'judge') {
-        fake += `<label><input type="radio" name="${prefix}${q.qid}" value="1">对</label>`;
-        fake += `<label><input type="radio" name="${prefix}${q.qid}" value="0">错</label>`;
-      } else {
-        q.opts.forEach((o, j) => {
-          const L = String.fromCharCode(65 + j);
-          fake += `<label><input type="${inp}" name="${prefix}${q.qid}" value="${L}">${L}</label>`;
-        });
-      }
-      fake += '</div>';
-    }
-    fake += '</div>';
-  }
-  fake += '</div><div class="shiti_r"><span id="hh">00</span><span id="mm">09</span><span id="ss">47</span></div></div></form>';
-
-  const stub = `<script>
-window.GM_getValue=function(k,d){const v=localStorage.getItem(k);return v===null?d:JSON.parse(v);};
-window.GM_setValue=function(k,v){localStorage.setItem(k,JSON.stringify(v));};
-window.GM_info={script:{version:'${version}'}};
-</script>
+  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <style>
-  /* font-display 必须是 swap：用 block 时字体就绪前整段文字「不可见」，
-     无头浏览器的虚拟时间会把字体加载无限推迟，结果面板里所有文字都不绘制（实测整块空白）。
-     swap 先用兜底字体渲染，字体到了再替换，最坏情况只是 emoji 显示成方块。 */
-  /* emoji 由系统字体提供（见 ensureEmojiFont）。不要用 @font-face 的 data URI：
-     font-display:block 会让「字体就绪前文字不可见」，而无头浏览器的虚拟时间
-     不推进字体加载任务，结果面板里所有文字都不绘制（实测整块空白）；
-     换成 swap 则字体永远不加载，emoji 一直是方块。两种都不行。 */
-  #csta-panel-host{right:26px!important;top:92px!important;bottom:auto!important;}
-  /* 注意：面板在 Shadow DOM 里，这里的任何选择器都进不去。
-     emoji 字体必须在影子根内部注入，见下面的 injectEmojiFont()。 */
+  html, body { margin: 0; padding: 0; background: #0b0e13; overflow: hidden; }
+  body { padding: 8px; }
 </style>
 <script>
-// 面板在 Shadow DOM 里：文档级 @font-face 能被影子根引用，但字体栈必须写进影子根内部才生效。
-function injectEmojiFont() {
-  var host = document.getElementById('csta-panel-host');
-  var root = host && host.shadowRoot;
-  if (!root) return false;
-  if (root.getElementById('__emoji')) return true;
-  var st = document.createElement('style');
-  st.id = '__emoji';
-  // 只把 emoji 字体挂在字体栈末尾作兜底。若把它写在前头，汉字会因为没有对应
-  // 字形而整段变成空白（上一版就是这样把面板渲染空的）。
-  // 只补一个 emoji 兜底：中文交给系统默认，emoji 落到 Noto Emoji。
-  // 注意 emoji 字体必须排在最后——放前面时汉字因无字形会整段空白。
-  st.textContent = ''
-    + '#fx-panel, #fx-panel *{font-family:inherit,"Noto Emoji","NotoEmojiLocal";}'
-    + '#fx-panel .log-box,#fx-panel .log-line{'
-    + 'font-family:ui-monospace,"Cascadia Mono",Consolas,monospace,"Noto Emoji","NotoEmojiLocal";}';
-  root.appendChild(st);
-  return true;
-}
-// 配图用固定演示日志：脚本真实启动日志里带着本机临时路径（.tmp-docs-images/xxx.html），
-// 会被截图进 README。这里等脚本跑完后替换成一段干净、且能说明状态的演示日志。
+window.GM_getValue = function (k, d) {
+  var v = localStorage.getItem(k);
+  return v === null ? d : JSON.parse(v);
+};
+window.GM_setValue = function (k, v) { localStorage.setItem(k, JSON.stringify(v)); };
+window.GM_xmlhttpRequest = function () { throw new Error('配图不联网'); };
+window.GM_info = { script: { version: '${version}' } };
+window.alert = function () {}; window.confirm = function () { return true; };
+</script>
+</head><body>
+<!-- 脚本有个启动守卫：域名不在适配表里、且页面看不出是培训平台时静默退出。
+     配图页是 file://，页面上必须放一套最小试卷结构，面板才会被创建。
+     这一段 display:none，不进画面。 -->
+<form id="examInfoFrom" style="display:none">
+  <input type="hidden" name="courseId" value="1246">
+  <input type="hidden" name="testTime" value="10">
+  <div class="shiti">
+    <div class="shiti_l"><h2>一、单选题（共 2 道题）</h2>
+      <dl class="danxuan"><dt><span>1.</span>占位题干一（20分）</dt></dl>
+      <div class="xuxiang">
+        <label><input type="radio" name="danxuan9101" value="A">A</label>
+        <label><input type="radio" name="danxuan9101" value="B">B</label>
+      </div>
+      <dl class="danxuan"><dt><span>2.</span>占位题干二（20分）</dt></dl>
+      <div class="xuxiang">
+        <label><input type="radio" name="danxuan9102" value="A">A</label>
+        <label><input type="radio" name="danxuan9102" value="B">B</label>
+      </div>
+    </div>
+    <div class="shiti_l"><h2>二、多选题（共 1 道题）</h2>
+      <dl class="danxuan"><dt><span>1.</span>占位题干三（20分）</dt></dl>
+      <div class="xuxiang">
+        <label><input type="checkbox" name="duoxuan9103" value="A">A</label>
+        <label><input type="checkbox" name="duoxuan9103" value="B">B</label>
+      </div>
+    </div>
+    <div class="shiti_l"><h2>三、判断题（共 2 道题）</h2>
+      <div class="shiti_l">
+        <dl class="danxuan"><dt><span>1.</span>占位题干四</dt></dl>
+        <div class="xuxiang">
+          <label><input type="radio" name="panduan9104" value="1">对</label>
+          <label><input type="radio" name="panduan9104" value="0">错</label>
+        </div>
+      </div>
+      <div class="shiti_l">
+        <dl class="danxuan"><dt><span>2.</span>占位题干五</dt></dl>
+        <div class="xuxiang">
+          <label><input type="radio" name="panduan9105" value="1">对</label>
+          <label><input type="radio" name="panduan9105" value="0">错</label>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="shiti_r"><span id="hh">00</span><span id="mm">09</span><span id="ss">47</span></div>
+</form>
+<script>${userScript}</script>
+<script>
 window.addEventListener('load', function () {
   setTimeout(function () {
-    injectEmojiFont();
     var host = document.getElementById('csta-panel-host');
-    var box = host && host.shadowRoot && host.shadowRoot.querySelector('#fx-log');
-    if (!box) return;
-    var lines = [
-      ['[10:12:03] 插件已加载 v${version} · 甘肃省', 'log-info'],
-      ['[10:12:04] 检测到试卷，共 5 道题', 'log-info'],
-      ['[10:12:05] 解析到 5 道题：单选题2 / 多选题1 / 判断题2', 'log-info'],
-      ['[10:12:06] 第 9163 题作答（题库）：C', 'log-ok'],
-      ['[10:12:07] 题库命中 5/5，已按节奏填答完成', 'log-ok'],
-    ];
-    box.innerHTML = lines.map(function (x) {
-      var d = document.createElement('div');
-      d.className = 'log-line ' + x[1];
-      d.textContent = x[0];
-      return d.outerHTML;
-    }).join('');
-  }, 2500);
-});
-</script>`;
+    var root = host && host.shadowRoot;
+    if (!root) return;
+    var st = document.createElement('style');
+    st.id = '__shot';
+    st.textContent = ''
+      // 1) 定位改为静态，让面板成为画面主体（原来是 fixed 在右上角）
+      + '#fx-panel{position:static!important;width:300px!important;'
+      + 'max-height:none!important;margin:0 auto!important;}'
+      // 2) 字体不用管：面板文案已全部改成纯文本（与法宣成品一致），
+      //    不再依赖 emoji 字体。此前为渲染统计行里的图标字符折腾过三条路都不通：
+      //    @font-face 的 block 会让整段文字不绘制、swap 则字体永不加载、
+      //    文档级选择器又进不了 Shadow DOM。
+      ;
+    root.appendChild(st);
 
-  return mockup
-    .replace('</head>', `${stub}</head>`)
-    .replace('<body>', `<body>${fake}`)
-    .replace('</body>', `<script>${userScript}</script></body>`);
+    // 3) 展开「日志与自检」，与法宣图一致（其余分类收起）
+    var head = root.querySelector('#fx-group-log .group-head');
+    if (head) head.click();
+
+    // 4) 演示日志。脚本真实启动日志里带着本机临时路径（页面的 file:// 地址），
+    //    会被截图进 README，所以这里覆盖成一段干净且能说明状态的演示内容。
+    var box = root.querySelector('#fx-log');
+    if (box) {
+      var lines = [
+        ['[10:12:03] 插件已加载 v${version} · 甘肃省', 'log-info'],
+        ['[10:12:05] 等待考试页面就绪…', 'log-info'],
+        ['[10:12:06] 自检 ${selfTestCount}/${selfTestCount} 项通过', 'log-ok'],
+      ];
+      box.innerHTML = lines.map(function (x) {
+        var d = document.createElement('div');
+        d.className = 'log-line ' + x[1];
+        d.textContent = x[0];
+        return d.outerHTML;
+      }).join('');
+      var badge = root.querySelector('#fx-gb-log');
+      if (badge) badge.textContent = '日志 ' + lines.length + ' 行';
+    }
+  }, 2000);
+});
+</script>
+</body></html>`;
 }
 
 // ---------------------------------------------------------------- 社交预览
@@ -218,7 +188,7 @@ function socialHtml(dark) {
   const fg = dark ? '#e7eaf0' : '#1a2130';
   const sub = dark ? '#8b95a8' : '#5d6675';
   const accent = '#2b5fd9';
-  const panelAbs = join(ROOT, 'docs', 'panel.png');
+  const panelAbs = join(ROOT, 'docs', 'panel.webp');
   return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{width:1280px;height:640px;background:${bg};font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif;
@@ -232,8 +202,11 @@ function socialHtml(dark) {
     .feats span{padding:7px 14px;border-radius:8px;border:1px solid ${dark ? '#2f3540' : '#d8dde5'};
          background:${card};color:${dark ? '#b9c2d0' : '#3a4354'};font-size:15px}
     .foot{margin-top:30px;font-size:15px;color:${sub};font-family:ui-monospace,Menlo,Consolas,monospace}
-    .right{width:340px;flex:none;display:flex;justify-content:center}
-    .right img{width:300px;border-radius:12px;box-shadow:0 18px 48px rgba(0,0,0,${dark ? '.55' : '.18'})}
+    .right{width:340px;flex:none;display:flex;align-items:center;justify-content:center}
+    /* 按高度约束而不是按宽度：面板图是 320x640 的细长比例，只固定宽度会让它
+       超出 640px 画布高度、被裁掉一截。max-height 保证整张图都进画面。 */
+    .right img{max-height:560px;max-width:300px;width:auto;height:auto;
+         border-radius:12px;box-shadow:0 18px 48px rgba(0,0,0,${dark ? '.55' : '.18'})}
   </style></head><body>
     <div class="left">
       <span class="tag">Tampermonkey 用户脚本</span>
@@ -275,9 +248,14 @@ function toWebp(png, webp, quality) {
     { stdio: ['ignore', 'pipe', 'inherit'] });
 }
 
-const panelPng = join(ROOT, 'docs', 'panel.png');
+// 面板特写与法宣同形态（只截面板、2 倍缩放）。尺寸比法宣略高：
+// 本脚本比它多一个「观看限制」分类，日志按钮也多一颗。
+// 先落到临时 PNG 再转 webp：Chrome 不能直接截 webp。
+const panelWebp = join(ROOT, 'docs', 'panel.webp');
 console.log('渲染面板…');
-shot(panelHtml(), panelPng, 1320, 900, 2);
+const panelPng = join(TMP, 'panel.png');
+shot(panelHtml(), panelPng, 320, 640, 2);
+toWebp(panelPng, panelWebp, 92);
 
 for (const dark of [false, true]) {
   const name = dark ? 'social-preview-dark' : 'social-preview-light';
@@ -289,7 +267,7 @@ for (const dark of [false, true]) {
 
 rmSync(TMP, { recursive: true, force: true });
 console.log('\n完成：');
-console.log('  docs/panel.png');
+console.log('  docs/panel.webp');
 console.log('  docs/social-preview-light.webp');
 console.log('  docs/social-preview-dark.webp');
 console.log('\n下一步：到 GitHub Settings → Social preview 重新上传浅色版（OG 不会随 README 自动更新）。');
