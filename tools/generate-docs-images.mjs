@@ -34,6 +34,10 @@ const CHROME = process.env.CHROME || [
 ].find((p) => p && existsSync(p));
 
 const FFMPEG = process.env.FFMPEG || ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg'].find((p) => existsSync(p));
+// ImageMagick 只用来给面板图裁边。缺了不致命，只是图里会留不匀的空白。
+const MAGICK = process.env.MAGICK || [
+  '/usr/bin/magick', '/usr/bin/convert', '/usr/local/bin/magick',
+].find((p) => p && existsSync(p));
 
 if (!CHROME) {
   console.error('找不到 Chrome/Chromium。请安装，或用 CHROME=/path/to/chrome 指定。');
@@ -161,10 +165,12 @@ window.addEventListener('load', function () {
     //    会被截图进 README，所以这里覆盖成一段干净且能说明状态的演示内容。
     var box = root.querySelector('#fx-log');
     if (box) {
+      // 每条都控制在一行内：日志框是等宽字体 + 定宽面板，
+      // 多一个字就会折行，图上看像被截断。带「· 甘肃省」那版就折了。
       var lines = [
-        ['[10:12:03] 插件已加载 v${version} · 甘肃省', 'log-info'],
-        ['[10:12:05] 等待考试页面就绪…', 'log-info'],
-        ['[10:12:06] 自检 ${selfTestCount}/${selfTestCount} 项通过', 'log-ok'],
+        ['[10:12:03] 插件已加载 v${version}', 'log-info'],
+        ['[10:12:04] 等待考试页面就绪…', 'log-info'],
+        ['[10:12:05] 自检 ${selfTestCount}/${selfTestCount} 项通过', 'log-ok'],
       ];
       box.innerHTML = lines.map(function (x) {
         var d = document.createElement('div');
@@ -202,10 +208,11 @@ function socialHtml(dark) {
     .feats span{padding:7px 14px;border-radius:8px;border:1px solid ${dark ? '#2f3540' : '#d8dde5'};
          background:${card};color:${dark ? '#b9c2d0' : '#3a4354'};font-size:15px}
     .foot{margin-top:30px;font-size:15px;color:${sub};font-family:ui-monospace,Menlo,Consolas,monospace}
-    .right{width:340px;flex:none;display:flex;align-items:center;justify-content:center}
-    /* 按高度约束而不是按宽度：面板图是 320x640 的细长比例，只固定宽度会让它
-       超出 640px 画布高度、被裁掉一截。max-height 保证整张图都进画面。 */
-    .right img{max-height:560px;max-width:300px;width:auto;height:auto;
+    /* 面板上下都要留出呼吸空间：按 max-height 缩放后仍要让 640px 画布留边，
+       否则图的顶端/底端会贴死在画布边界上，看着像被裁。 */
+    .right{width:340px;flex:none;display:flex;align-items:center;justify-content:center;
+         padding:0}
+    .right img{max-height:520px;max-width:280px;width:auto;height:auto;
          border-radius:12px;box-shadow:0 18px 48px rgba(0,0,0,${dark ? '.55' : '.18'})}
   </style></head><body>
     <div class="left">
@@ -243,6 +250,30 @@ function shot(html, out, w, h, scale) {
   rmSync(page, { force: true });
 }
 
+/**
+ * 裁掉画布上多余的背景，只在面板四周留统一的一道边。
+ *
+ * 为什么需要：面板是 `position:fixed` 改 static 后进页面流，它的实际尺寸由内容决定，
+ * 而视口尺寸是估的 —— 估大了就是一圈不匀的黑边（曾经右边 20px、左/上/下 0），
+ * 估小了面板会被 `overflow:hidden` 裁掉一角。用 -trim 按实际像素裁，两头都稳。
+ *
+ * `-fuzz` 给 2%：页面底色 #0b0e13 与面板底色 #12161d 只差十几个色阶，
+ * 容差太小会留一圈脏边，太大又可能啃进面板圆角。2% 实测正好分开。
+ */
+function trimPanel(png, padPx) {
+  if (!MAGICK) {
+    console.warn('缺少 ImageMagick，跳过裁边（图里会有不匀的空白）');
+    return png;
+  }
+  const out = png.replace(/\.png$/, '-trim.png');
+  execFileSync(MAGICK, [
+    png, '-fuzz', '2%', '-trim', '+repage',
+    '-bordercolor', '#0b0e13', '-border', String(padPx),
+    out,
+  ], { stdio: ['ignore', 'pipe', 'pipe'] });
+  return out;
+}
+
 function toWebp(png, webp, quality) {
   execFileSync(FFMPEG, ['-y', '-loglevel', 'error', '-i', png, '-quality', String(quality), webp],
     { stdio: ['ignore', 'pipe', 'inherit'] });
@@ -254,8 +285,10 @@ function toWebp(png, webp, quality) {
 const panelWebp = join(ROOT, 'docs', 'panel.webp');
 console.log('渲染面板…');
 const panelPng = join(TMP, 'panel.png');
-shot(panelHtml(), panelPng, 320, 640, 2);
-toWebp(panelPng, panelWebp, 92);
+// 视口给足余量，别让 overflow:hidden 啃掉面板边角；
+// 多出来的空白由 trimPanel 按实际像素裁掉，最终四边留白 16px（@2x）。
+shot(panelHtml(), panelPng, 380, 760, 2);
+toWebp(trimPanel(panelPng, 16), panelWebp, 92);
 
 for (const dark of [false, true]) {
   const name = dark ? 'social-preview-dark' : 'social-preview-light';
