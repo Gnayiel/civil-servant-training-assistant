@@ -1,6 +1,6 @@
 {
   "name": "civil-servant-training-assistant",
-  "version": "1.3.8",
+  "version": "1.3.9",
   "private": true,
   "description": "公务员网络培训平台通用 Tampermonkey 用户脚本：自动答题、解除播放失焦暂停、本地题库，内置甘肃省适配",
   "license": "MIT",

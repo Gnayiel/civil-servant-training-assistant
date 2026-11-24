@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.3.8
+// @version      1.3.9
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
 // @match        https://gwypx.gsdj.gov.cn/*
 // @match        http://gwypx.gsdj.gov.cn/*
-// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@main/civil-servant-training-assistant.user.js
-// @updateURL    https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@main/civil-servant-training-assistant.user.js
+// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@latest/civil-servant-training-assistant.user.js
+// @updateURL    https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@latest/civil-servant-training-assistant.user.js
 // @run-at       document-idle
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -33,7 +33,7 @@
 
   // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
   // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.8';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.9';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';
@@ -3691,9 +3691,11 @@
    * 从本地粘贴安装的用户根本不会收到提示。
    *
    * 两个数据源并行查，取版本较高者：
-   *   - @updateURL（jsDelivr）：国内可达性好，但分支有 12 小时缓存。
-   *     实测在生产环境加 ?t= 时间戳、加 Cache-Control: no-cache 都**绕不过**，
-   *     分支缓存键不含查询串——旧版本注释里「加时间戳即可绕过」是错的。
+   *   - @updateURL（jsDelivr）：国内可达性好。**必须用 @latest（解析到最新 tag），
+   *     不能用 @main（分支）** —— 分支指针在 CDN 上缓存得极久：实测 main 已是 1.3.8 时，
+   *     @main 仍在返回 1.2.0，响应头 max-age=604800（7 天）、s-maxage=43200（12 小时）。
+   *     而且分支缓存键不含查询串，加 ?t= 时间戳、加 Cache-Control: no-cache 都绕不过。
+   *     tag 不可变、每个版本是独立 URL，所以 @latest 没有这个陈旧问题。
    *   - GitHub Releases API：不走 CDN，打 tag 后立刻反映，但国内可能连不上。
    * 任一成功即可给出结论，两个都失败才报错；两个都给值时取较高的那个。
    *

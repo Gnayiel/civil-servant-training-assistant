@@ -111,6 +111,19 @@ ok('未把 innerHTML 拼进动态值（只允许静态模板）',
   (code.match(/innerHTML\s*=/g) || []).length <= 2,
   `出现 ${(code.match(/innerHTML\s*=/g) || []).length} 次`);
 ok('没有硬编码账号密码', !/dongyu/i.test(code) && !/820330/.test(code));
+// 更新地址必须指向「最新 tag」，不能指向分支。
+// 实测：main 已是 1.3.8 时 jsDelivr 的 @main 仍在返回 1.2.0（max-age 7 天、s-maxage 12 小时，
+// 且分支缓存键不含查询串，加时间戳也绕不过）。用分支做 @updateURL 等于自动更新永久失效，
+// 用分支做 @downloadURL 更糟 —— 用户点「重新安装」会被静默降级到旧版本。
+// 只看 UserScript 头，别把正文注释里提到 @updateURL 的地方也算进来
+const header = (code.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/) || [''])[0];
+const urlLines = header.split('\n').filter((l) => /^\s*\/\/\s*@(?:update|download)URL/.test(l));
+ok('声明了 @updateURL 与 @downloadURL', urlLines.length === 2, `${urlLines.length} 条`);
+ok('更新地址用 @latest（tag），不用分支',
+  urlLines.length === 2 && urlLines.every((l) => /@latest\//.test(l)),
+  urlLines.map((l) => l.trim().slice(0, 90)).join(' | '));
+ok('更新地址不出现分支名 @main/@master',
+  !urlLines.some((l) => /@(?:main|master)\//.test(l)), '仍有分支地址');
 ok('没有把 cookie/token 写进日志', !/document\.cookie/.test(code));
 
 // ------------------------------------------------------------------ 加载
