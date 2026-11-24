@@ -92,6 +92,33 @@ node tools/ci.mjs --strict                  # 要求必须有浏览器
 
 `tests/selftest.mjs` 会比对 1 与 2，`tools/check-docs.mjs` 会核对 3，漏改会失败。
 
+## 没有 git 时怎么推
+
+环境里没有 git（或不想在工作区留 `.git`）时，用 REST API 直接推：
+
+```bash
+GITHUB_TOKEN=xxx node tools/push-to-github.mjs --owner <用户名> [--repo <仓库名>] [--dry]
+```
+
+它读取与 `.gitignore` 一致的排除规则，把文件打成**一个提交**（不是逐文件提交），
+顺带创建仓库、配置话题。
+
+内置两道护栏，命中就拒绝推送：
+
+- 路径级：`probe/`、`_ref/`、`.env`、`*.bak`
+- 内容级：`JSESSIONID=`、会话 `token=`、`ghp_*` 令牌、`BEGIN PRIVATE KEY`
+
+### 三个已知约束
+
+1. **空仓库的 Git Data API 返回 409**（不是 404）。必须先通过 Contents API 落一个文件
+   产生初始提交，之后才能建 blob。脚本已自动处理。
+2. **`.github/workflows/` 下的文件需要 `workflow` 权限**。只有 `repo` 权限时，
+   建 tree 会返回 **404 而不是 403**（GitHub 故意模糊化），Contents API 同样 404，
+   没有绕过办法。脚本会自动剔除这两个文件继续推，并在结尾列出缺口。
+   补法：重新生成经典令牌时勾选 `workflow`，或在网页上手工新建。
+3. **新建仓库后有几秒复制延迟**，trees / commits 偶发 404。脚本对写操作做 4 次
+   指数退避重试。
+
 ## 两个不入库的目录
 
 仓库根下有两处本地目录，都写在 `.gitignore` 里：
