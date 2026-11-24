@@ -208,6 +208,35 @@ setTimeout(function () {
     // 通道明细是散在查询链里发的，曾经有一处漏了走 dbg()，开关就成了摆设。
     r.debugLines = host.shadowRoot.querySelectorAll('#fx-log .log-line.log-debug').length;
     r.debugBtn = (host.shadowRoot.querySelector('#fx-debug') || {}).textContent;
+
+    // 收起态窄条：标题必须排成一行、且左右留白对称。
+    // 标题 9 个字（公务员网络培训助手）比法宣的 6 个字长，曾因 132px 容不下而折成两行。
+    (function () {
+      var tg = host.shadowRoot.querySelector('#fx-toggle');
+      if (!tg) return;
+      tg.click();
+      var pnl = host.shadowRoot.querySelector('#fx-panel');
+      var ct = host.shadowRoot.querySelector('#fx-collapse-title');
+      if (!pnl || !ct || !pnl.classList.contains('collapsed')) return;
+      var pcs = getComputedStyle(pnl);
+      var tcs = getComputedStyle(ct);
+      var pr = pnl.getBoundingClientRect();
+      var lineH = parseFloat(tcs.lineHeight) || 0;
+      var boxH = ct.getBoundingClientRect().height;
+      var range = document.createRange();
+      range.selectNodeContents(ct);
+      var tr = range.getBoundingClientRect();
+      var innerL = pr.left + parseFloat(pcs.paddingLeft);
+      var innerR = pr.right - parseFloat(pcs.paddingRight);
+      r.foldTitle = {
+        lines: lineH ? Math.round(boxH / lineH) : null,
+        whiteSpace: tcs.whiteSpace,
+        gapLeft: Math.round((tr.left - innerL) * 10) / 10,
+        gapRight: Math.round((innerR - tr.right) * 10) / 10,
+        textW: Math.round(tr.width * 10) / 10,
+      };
+      tg.click();  // 还原，别影响后续断言
+    })();
   }
   // 诊断包结构（脱敏细节由 Node 自检精确覆盖，这里不看正则）
   guard('diag', function () {
@@ -526,6 +555,13 @@ ok('开关打开时拦截器生效（探针监听收不到 blur）', player.prob
 ok('关掉开关后拦截器放行（探针监听收到 blur）', player.probeOffPassed === true,
   String(player.probeOffPassed));
 ok('重新打开开关又恢复拦截', player.probeOnAgain === true);
+ok('收起态标题排成一行（不被窄条挤断）',
+  exam.foldTitle && exam.foldTitle.lines === 1 && exam.foldTitle.whiteSpace === 'nowrap',
+  JSON.stringify(exam.foldTitle));
+ok('收起态标题左右留白对称',
+  exam.foldTitle && exam.foldTitle.gapLeft === exam.foldTitle.gapRight
+    && exam.foldTitle.gapLeft >= 4,
+  JSON.stringify(exam.foldTitle));
 ok('反复拨播放开关不会累积 document 监听',
   player.clickListenersAdded === 0, `新增 ${player.clickListenersAdded} 个`);
 ok('静音开关默认生效', player.mutedDefault === true, String(player.mutedDefault));

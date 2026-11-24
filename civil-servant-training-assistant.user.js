@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.3.11
+// @version      1.3.12
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
 // @match        https://gwypx.gsdj.gov.cn/*
 // @match        http://gwypx.gsdj.gov.cn/*
-// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@v1.3.11/civil-servant-training-assistant.user.js
+// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@v1.3.12/civil-servant-training-assistant.user.js
 // @updateURL    https://github.com/Gnayiel/civil-servant-training-assistant/releases/latest/download/civil-servant-training-assistant.user.js
 // @run-at       document-idle
 // @grant        GM_setValue
@@ -33,7 +33,7 @@
 
   // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
   // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.11';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.12';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';
@@ -2730,10 +2730,22 @@
       #fx-panel .log-debug { border-left-color: var(--fx-accent); color: #b9d8ff; opacity: 0.9; }
 
       /* ---------- 收起：只留一条窄条，点「展开」还原 ---------- */
-      #fx-panel.collapsed { width: min(132px, calc(100vw - 24px)); }
+      /* 窄条宽度跟着标题走，不写死。
+         法宣的标题是 6 个字（「法宣在线助手」），132px 够用；本脚本是 9 个字
+         （「公务员网络培训助手」），13px 时整行 117px，而 132px 减去左右各 10px 内边距
+         只剩 112px —— 差 2.5px，于是折成「…助手」两行。
+         写死一个更大的值能治当下，但标题一改（比如加省份名）又会折。
+         所以用 max-content 让宽度由内容决定：标题多长、窄条就多宽，两侧 padding 恒定对称。 */
+      #fx-panel.collapsed { width: max-content; min-width: min(132px, calc(100vw - 24px));
+          max-width: calc(100vw - 24px); padding-left: 14px; padding-right: 14px; }
+      /* 两个按钮撑满窄条：宽度由标题决定后，按钮不能再按 1fr 均分到过窄的格子。
+         这个 min-width 同时决定标题左右留白 —— 内容区由按钮撑开（2×58+6=122），
+         标题 108px 居中后两侧各约 7px，既不像贴边也不显空。 */
+      #fx-panel.collapsed .topbar button { min-width: 58px; }
       #fx-panel .collapse-title { display: none; }   /* 基础态隐藏：窄条标题只在收起时出现，否则和 .panel-title 重复 */
       #fx-panel.collapsed .fx-content, #fx-panel.collapsed .panel-title { display: none; }
       #fx-panel.collapsed .collapse-title { display: flex; align-items: center; justify-content: center; gap: 6px;
+          font-size: 12px; white-space: nowrap;
           font-weight: 600; margin-bottom: 8px; cursor: move; user-select: none; }
       #fx-panel.collapsed .topbar { grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 0; }
       #fx-panel.collapsed #fx-stop { display: inline-flex; }
