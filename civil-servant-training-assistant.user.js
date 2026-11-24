@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.2.0
+// @version      1.2.1
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
@@ -19,6 +19,7 @@
 // @connect      api.openai.com
 // @connect      dashscope.aliyuncs.com
 // @connect      open.bigmodel.cn
+// @connect      api.github.com
 // @noframes
 // ==/UserScript==
 
@@ -1820,11 +1821,14 @@
         api.setState('正在检查更新…');
         const r = await checkUpdate();
         checkBtn.disabled = false;
+        // 有一个源没查通时说明另个源的结果，避免用户以为「已是最新」是确定的
+        const via = r.error ? ''
+          : `（来源 ${r.source}${r.failed && r.failed.length ? `，${r.failed.join('、')} 不可达` : ''}）`;
         if (r.error) {
           log('检查更新失败：' + r.error, 'warn');
           api.setState('检查更新失败');
         } else if (r.newer) {
-          log(`发现新版本 ${r.remote}（当前 ${VERSION}），点提示条前往下载`, 'ok');
+          log(`发现新版本 ${r.remote}（当前 ${VERSION}）${via}，点提示条前往下载`, 'ok');
           api.setState(`有新版本 ${r.remote}`);
           api.showNotice(`有新版本 ${r.remote}，点击此处打开下载页`, 'info');
           const n = $('fx-notice');
@@ -1833,7 +1837,7 @@
               'https://github.com/Gnayiel/civil-servant-training-assistant/releases/latest', '_blank');
           }
         } else {
-          log(`已是最新版本（${VERSION}）`, 'ok');
+          log(`已是最新版本（${VERSION}）${via}`, 'ok');
           api.setState('已是最新');
         }
       });
@@ -1976,12 +1980,22 @@
    * 手动检查更新。
    *
    * 油猴自带的「检查脚本更新」只在脚本从 URL 安装、且 @updateURL 可达时才会生效；
-   * 从本地粘贴安装的用户根本不会收到提示。而且 jsDelivr 对分支有 12 小时缓存，
-   * 即使自动检查跑到了，也可能拿到旧版本。
+   * 从本地粘贴安装的用户根本不会收到提示。
    *
-   * 这里手动拉 @updateURL 并加时间戳参数绕过 CDN 缓存，比对 @version。
+   * 两个数据源并行查，取版本较高者：
+   *   - @updateURL（jsDelivr）：国内可达性好，但分支有 12 小时缓存。
+   *     实测在生产环境加 ?t= 时间戳、加 Cache-Control: no-cache 都**绕不过**，
+   *     分支缓存键不含查询串——旧版本注释里「加时间戳即可绕过」是错的。
+   *   - GitHub Releases API：不走 CDN，打 tag 后立刻反映，但国内可能连不上。
+   * 任一成功即可给出结论，两个都失败才报错；两个都给值时取较高的那个。
+   *
    * 只做提示，不自动安装——替换脚本是油猴的职责，越权改自身会被安全策略拦。
    */
+  const RELEASE_API = 'https://api.github.com/repos/Gnayiel/'
+    + 'civil-servant-training-assistant/releases/latest';
+  const CDN_MAIN = 'https://fastly.jsdelivr.net/gh/Gnayiel/'
+    + 'civil-servant-training-assistant@main/civil-servant-training-assistant.user.js';
+
   function parseVersion(v) {
     const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(v || '').trim());
     return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
@@ -1997,40 +2011,85 @@
     return false;
   }
 
-  async function checkUpdate() {
-    const url = (typeof GM_info !== 'undefined' && GM_info.script
-      && (GM_info.script.updateURL || GM_info.script.downloadURL)) || '';
-    // GM_info 没给出时退回脚本头里的固定地址
-    const target = url || 'https://fastly.jsdelivr.net/gh/Gnayiel/'
-      + 'civil-servant-training-assistant@main/civil-servant-training-assistant.user.js';
-
-    try {
-      // 加 ?t= 让 CDN 视为新资源，绕过 12 小时分支缓存
-      const bust = target + (target.indexOf('?') < 0 ? '?' : '&') + 't=' + Date.now();
-      const text = await new Promise((resolve, reject) => {
-        if (typeof GM_xmlhttpRequest !== 'function') {
-          reject(new Error('当前环境不支持 GM_xmlhttpRequest'));
-          return;
-        }
-        GM_xmlhttpRequest({
-          method: 'GET',
-          url: bust,
-          timeout: 15000,
-          onload: (r) => (r.status >= 200 && r.status < 300
-            ? resolve(r.responseText)
-            : reject(new Error('HTTP ' + r.status))),
-          onerror: () => reject(new Error('网络错误')),
-          ontimeout: () => reject(new Error('请求超时')),
-        });
+  function fetchText(url) {
+    return new Promise((resolve, reject) => {
+      if (typeof GM_xmlhttpRequest !== 'function') {
+        reject(new Error('当前环境不支持 GM_xmlhttpRequest'));
+        return;
+      }
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url,
+        timeout: 15000,
+        onload: (r) => (r.status >= 200 && r.status < 300
+          ? resolve(r.responseText)
+          : reject(new Error('HTTP ' + r.status))),
+        onerror: () => reject(new Error('网络错误')),
+        ontimeout: () => reject(new Error('请求超时')),
       });
+    });
+  }
 
-      const m = /^\/\/\s*@version\s+(\S+)/m.exec(text);
-      if (!m) return { error: '远端脚本里没有 @version' };
-      const remote = m[1];
-      return { remote, local: VERSION, newer: versionNewer(remote, VERSION) };
-    } catch (e) {
-      return { error: e.message };
+  /**
+   * 每个源只负责「把响应变成版本号字符串」，取谁、怎么比在下游统一处理。
+   * 这样新增源不用动比较逻辑，也不用改界面。
+   */
+  const UPDATE_PROBES = [
+    {
+      label: 'jsDelivr',
+      url: () => {
+        const u = (typeof GM_info !== 'undefined' && GM_info.script
+          && (GM_info.script.updateURL || GM_info.script.downloadURL)) || '';
+        return u || CDN_MAIN;
+      },
+      parse: (text) => {
+        const m = /^\/\/\s*@version\s+(\S+)/m.exec(text);
+        return m ? m[1] : '';
+      },
+    },
+    {
+      label: 'GitHub Release',
+      url: () => RELEASE_API,
+      parse: (text) => {
+        try {
+          return String(JSON.parse(text).tag_name || '');
+        } catch {
+          return '';
+        }
+      },
+    },
+  ];
+
+  /** 多个源各报一个版本时取最高的那个；相等时保留先到的（jsDelivr 排在前）。 */
+  function pickNewest(hits) {
+    return hits.reduce((a, b) => (versionNewer(b.version, a.version) ? b : a));
+  }
+
+  async function checkUpdate() {
+    const settled = await Promise.all(UPDATE_PROBES.map(async (p) => {
+      try {
+        const ver = p.parse(await fetchText(p.url()));
+        return ver
+          ? { label: p.label, version: ver }
+          : { label: p.label, error: '读不到版本号' };
+      } catch (e) {
+        return { label: p.label, error: e.message };
+      }
+    }));
+
+    const hits = settled.filter((x) => x.version);
+    if (!hits.length) {
+      return { error: settled.map((x) => x.label + '：' + x.error).join('；') };
     }
+
+    const best = pickNewest(hits);
+    return {
+      remote: best.version,
+      local: VERSION,
+      newer: versionNewer(best.version, VERSION),
+      source: best.label,
+      failed: settled.filter((x) => !x.version).map((x) => x.label),
+    };
   }
 
   // ==================== 诊断包 ====================
@@ -2260,6 +2319,25 @@
       eq('补丁位有效', versionNewer('1.1.10', '1.1.9'), true);
       eq('带 v 前缀也认', versionNewer('v1.3.0', '1.2.0'), true);
       eq('非法版本不抛错', versionNewer('abc', '1.2.0'), false);
+
+      // 多源取最高版本（CDN 缓存滞后时不能掩盖 Release 的新版本）
+      const cdnProbe = UPDATE_PROBES[0];
+      const relProbe = UPDATE_PROBES[1];
+      eq('jsDelivr 源能从脚本头读出 @version',
+        cdnProbe.parse('// ==UserScript==\n// @name x\n// @version 3.4.5\n// ==/UserScript=='), '3.4.5');
+      eq('Release 源能读出 tag_name',
+        relProbe.parse('{"tag_name":"v9.8.7","name":"x"}'), 'v9.8.7');
+      eq('Release 源遇到坏 JSON 返回空', relProbe.parse('<html>502</html>'), '');
+      eq('两源都正常时取较高的',
+        pickNewest([{ version: '1.2.0' }, { version: '1.3.0' }]).version, '1.3.0');
+      eq('CDN 滞后到 1.1.0 也取 Release 的 1.2.0',
+        pickNewest([{ version: '1.1.0' }, { version: '1.2.0' }]).version, '1.2.0');
+      eq('只有 Release 可达时就用它',
+        pickNewest([{ version: '1.2.0' }]).version, '1.2.0');
+      eq('两源同版本时保留先到的（jsDelivr）', pickNewest([
+        { label: 'jsDelivr', version: '1.2.0' },
+        { label: 'GitHub Release', version: 'v1.2.0' },
+      ]).label, 'jsDelivr');
 
       // 诊断包日志脱敏
       eq('遮蔽 URL 里的 token',

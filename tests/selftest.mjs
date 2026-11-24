@@ -72,6 +72,9 @@ const EXPECT_GRANTS = ['GM_getValue', 'GM_setValue', 'GM_xmlhttpRequest'];
 ok('@grant 只有实际用到的三项', JSON.stringify(grants) === JSON.stringify(EXPECT_GRANTS), grants.join(','));
 ok('没有通配 @connect（供应链审查会拦）', !many('connect').includes('*'), many('connect').join(' '));
 ok('@connect 覆盖目标站点', many('connect').includes('gwypx.gsdj.gov.cn'));
+// 检查更新要查 Releases API 才能绕开 CDN 分支缓存，少了这条 @connect 会被拦
+ok('@connect 覆盖 GitHub Releases API', many('connect').includes('api.github.com'),
+  many('connect').join(' '));
 
 // 自动更新地址必须国内可达。raw.githubusercontent.com 在中国大陆经常被阻断，
 // 用它做 @updateURL 会让油猴的版本检查静默失败，用户永远收不到更新。

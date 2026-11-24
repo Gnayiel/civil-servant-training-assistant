@@ -2,11 +2,11 @@
 
 面向各地「公务员网络培训」平台的 Tampermonkey 用户脚本：自动作答试卷、解除「切窗口就暂停」的播放限制、本地题库积累与导入导出。
 
-![version](https://img.shields.io/badge/version-1.2.0-2b5fd9)
+![version](https://img.shields.io/badge/version-1.2.1-2b5fd9)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![node](https://img.shields.io/badge/node-%E2%89%A522-3c873a)
 ![deps](https://img.shields.io/badge/dependencies-0-success)
-![tests](https://img.shields.io/badge/checks-198%20assertions-success)
+![tests](https://img.shields.io/badge/checks-199%20assertions-success)
 
 单文件、无构建、无第三方依赖、无遥测。可在油猴里直接读完。
 
@@ -60,9 +60,12 @@
 
 ### 关于自动更新
 
-脚本的 `@updateURL` 指向 jsDelivr 而不是 `raw.githubusercontent.com`，因为后者在中国大陆经常不可达——用它做更新地址时油猴的版本检查会静默失败，永远收不到新版本。
+两层机制，互补：
 
-代价是 jsDelivr 对分支有 12 小时缓存，**新版本最多延迟 12 小时才提示**。想立刻升级就从上面的 Release 链接重装一次。
+- **油猴自带的更新检查**：读 `@updateURL`。指向 jsDelivr 而不是 `raw.githubusercontent.com`，因为后者在中国大陆经常不可达——用它做更新地址时版本检查会静默失败，永远收不到新版本。代价是 jsDelivr 对分支有 12 小时缓存，新版本最多延迟这么久才会被它发现。
+- **面板里的「检查更新」**：并行查 `@updateURL` 与 GitHub Releases API，取两者较高版本。Releases API 不走 CDN，打完 tag 立刻反映，所以手动点一次就能拿到确定结论，不受 12 小时缓存影响。一个源不可达时日志会写明结果出自哪个源。
+
+> 分支缓存各节点并不同步：实测同一时刻 `cdn.jsdelivr.net` 已是新版本，`fastly` / `gcore` / `testingcf` 仍停在旧版本。加 `?t=` 时间戳或 `Cache-Control: no-cache` 都绕不过——缓存键不含查询串。
 
 ## 使用
 
