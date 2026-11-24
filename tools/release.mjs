@@ -145,16 +145,19 @@ if (!hasGit) {
     tags = git(['tag', '--list', 'v*']).split('\n').filter(Boolean);
   } catch { /* 没有 tag */ }
   const nums = tags
+    // 排除正在发布的这个 tag：release.yml 由 tag push 触发，跑起来时它必然已存在。
+    // 不排除的话「版本大于已有最高 tag」永远为假，发版工作流结构上不可能通过。
+    .filter((t) => t !== TAG)
     .map((t) => t.replace(/^v/, '').split('.').map(Number))
     .filter((a) => a.length === 3 && a.every((n) => Number.isInteger(n)));
   const cur = VER.split('.').map(Number);
   const gt = (a, b) => (a[0] - b[0]) || (a[1] - b[1]) || (a[2] - b[2]);
   const maxTag = nums.sort(gt).pop();
   if (maxTag) {
-    ok(`版本 ${VER} 大于已有的最高 tag v${maxTag.join('.')}`, gt(cur, maxTag) > 0,
+    ok(`版本 ${VER} 大于之前的最高 tag v${maxTag.join('.')}`, gt(cur, maxTag) > 0,
       `已有 v${maxTag.join('.')}`);
   } else {
-    console.log('  info 仓库里还没有 v* tag（首次发版）');
+    console.log('  info 在此之前没有其他 v* tag（首个版本）');
   }
 
   // tag 是否已存在
