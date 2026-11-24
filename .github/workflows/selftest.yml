@@ -39,12 +39,14 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
-      # 统一门禁：语法、文档链接、内置断言、数据一致性、工作流检查、页面冒烟。
-      # 与本地 `npm run ci`、release.yml 共用同一份步骤清单，不再手抄；
-      # --strict 让缺浏览器时直接失败而不是静默跳过。
-      - name: 统一门禁（含浏览器冒烟）
-        if: matrix.node-version == '22'
-        run: node tools/ci.mjs --strict
-      - name: 快速门禁（Node 24 车道）
-        if: matrix.node-version == '24'
-        run: node tools/ci.mjs --no-smoke
+      # 统一门禁：语法、文档链接、内置断言、数据一致性、合并冒烟、工作流检查、页面冒烟。
+      # 与本地 node tools/ci.mjs、release.yml 共用同一份步骤清单，不再手抄。
+      # Node 22 跑完整门禁（--strict 让缺浏览器时直接失败而不是静默跳过）；
+      # Node 24 只跑无浏览器部分，避免重复启动 Chromium。
+      - name: 统一门禁
+        run: |
+          if [ "${{ matrix.node-version }}" = "22" ]; then
+            node tools/ci.mjs --strict
+          else
+            node tools/ci.mjs --no-smoke
+          fi
