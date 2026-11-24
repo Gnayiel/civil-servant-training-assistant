@@ -52,7 +52,7 @@
 
 1. 浏览器安装 [Tampermonkey](https://www.tampermonkey.net/)（Violentmonkey 亦可）
 2. 二选一装脚本：
-   - **直接下载**（推荐）：[`v1.1.0 附件`](https://github.com/Gnayiel/civil-servant-training-assistant/releases/latest/download/civil-servant-training-assistant.user.js) — 拖进浏览器窗口即可
+   - **直接下载**（推荐）：[`最新 Release 附件`](https://github.com/Gnayiel/civil-servant-training-assistant/releases/latest/download/civil-servant-training-assistant.user.js) — 拖进浏览器窗口即可（不写死版本号，永远指向最新）
    - **手动粘贴**：打开油猴面板 → 添加新脚本 → 粘贴 [`civil-servant-training-assistant.user.js`](civil-servant-training-assistant.user.js) 全文
 3. 登录培训网站，页面右下角出现「公务员网络培训助手」面板即生效
 

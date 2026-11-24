@@ -2,7 +2,7 @@
 /**
  * 不依赖 git 的推送：用 GitHub REST API 一次性创建仓库并提交全部文件。
  *
- *   GITHUB_TOKEN=xxx node tools/push-to-github.mjs --owner Gnayiel [--repo 名称] [--dry]
+ *   GITHUB_TOKEN=xxx node tools/push-to-github.mjs --owner Gnayiel [--repo 名称] [--message 提交信息] [--dry]
  *
  * 读取 .gitignore 排除目录，把工作区文件打包进一个 commit（不是逐文件提交）。
  * 适合没装 git 或不想在工作区留 .git 的场景。
@@ -29,10 +29,22 @@ function arg(name, dft = '') {
 const OWNER = arg('owner');
 const REPO = arg('repo', 'civil-servant-training-assistant');
 const DRY = process.argv.includes('--dry');
+const MESSAGE = arg('message');
 const DESC = 'Tampermonkey 用户脚本：公务员网络培训平台通用助手，自动答题 + 解除播放失焦暂停 + 本地题库';
 
+// 版本号只有一个事实来源：脚本元数据。写死在提交信息里迟早会和 @version 对不上。
+function currentVersion() {
+  try {
+    const src = readFileSync(join(ROOT, 'civil-servant-training-assistant.user.js'), 'utf8');
+    const m = /^\/\/\s*@version\s+(\S+)/m.exec(src);
+    return m ? m[1] : '';
+  } catch {
+    return '';
+  }
+}
+
 if (!OWNER) {
-  console.error('用法: GITHUB_TOKEN=xxx node tools/push-to-github.mjs --owner <用户名> [--repo <仓库名>] [--dry]');
+  console.error('用法: GITHUB_TOKEN=xxx node tools/push-to-github.mjs --owner <用户名> [--repo <仓库名>] [--message <提交信息>] [--dry]');
   process.exit(2);
 }
 if (!TOKEN) {
@@ -232,10 +244,10 @@ async function main() {
     tree = await api('POST', `/repos/${OWNER}/${REPO}/git/trees`, { tree: toTree(rest) });
   }
 
-  const msg = parentSha
+  const ver = currentVersion();
+  const msg = MESSAGE || (parentSha
     ? 'chore: 同步仓库内容'
-    : 'feat: 公务员网络培训助手 v1.1.0\n\n' +
-      '多省份适配架构、胶囊按钮面板、442 条内置题库、五层检查与页面冒烟。';
+    : `feat: 公务员网络培训助手 v${ver || '?'}（初始提交）`);
   const commit = await api('POST', `/repos/${OWNER}/${REPO}/git/commits`, {
     message: msg,
     tree: tree.sha,
