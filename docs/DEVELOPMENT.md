@@ -92,6 +92,27 @@ node tools/ci.mjs --strict                  # 要求必须有浏览器
 
 `tests/selftest.mjs` 会比对 1 与 2，`tools/check-docs.mjs` 会核对 3，漏改会失败。
 
+## 自动更新地址为什么用 jsdelivr
+
+`@updateURL` 指向 `cdn.jsdelivr.net/gh/<owner>/<repo>@main/...`，不用
+`raw.githubusercontent.com`。
+
+原因：`raw.githubusercontent.com` 在中国大陆经常不可达。用它做更新地址时，
+油猴的版本检查会**静默失败**——不报错，只是永远收不到新版本。而本项目的使用者
+恰好都在国内网络环境，这个坑必须避开。
+
+| 通道 | 国内可达 | 缓存 |
+| --- | --- | --- |
+| `raw.githubusercontent.com` | 经常不可达 | 无 |
+| `cdn.jsdelivr.net` | 可达 | `@main` 约数小时 |
+| Release 附件（`github.com/.../releases/download/...`） | 多数可达 | 无 |
+
+代价是 jsdelivr 的 `@main` 有数小时缓存，发版后不会立刻被感知到。对培训类脚本
+（一学期更新一两次）没有影响。要立即生效可让用户手动重装 Release 附件。
+
+`tests/selftest.mjs` 有一条断言专门拦这个：`@updateURL` 里出现
+`raw.githubusercontent.com` 就失败。
+
 ## 没有 git 时怎么推
 
 环境里没有 git（或不想在工作区留 `.git`）时，用 REST API 直接推：

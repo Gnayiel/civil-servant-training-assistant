@@ -20,8 +20,8 @@
 // @connect      dashscope.aliyuncs.com
 // @connect      open.bigmodel.cn
 // @noframes
-// @updateURL    https://raw.githubusercontent.com/Gnayiel/civil-servant-training-assistant/main/civil-servant-training-assistant.user.js
-// @downloadURL  https://raw.githubusercontent.com/Gnayiel/civil-servant-training-assistant/main/civil-servant-training-assistant.user.js
+// @updateURL    https://cdn.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@main/civil-servant-training-assistant.user.js
+// @downloadURL  https://cdn.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@main/civil-servant-training-assistant.user.js
 // ==/UserScript==
 
 (function () {

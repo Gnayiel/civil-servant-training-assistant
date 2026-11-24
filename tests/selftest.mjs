@@ -73,6 +73,17 @@ ok('@grant 只有实际用到的三项', JSON.stringify(grants) === JSON.stringi
 ok('没有通配 @connect（供应链审查会拦）', !many('connect').includes('*'), many('connect').join(' '));
 ok('@connect 覆盖目标站点', many('connect').includes('gwypx.gsdj.gov.cn'));
 
+// 自动更新地址必须国内可达。raw.githubusercontent.com 在中国大陆经常被阻断，
+// 用它做 @updateURL 会让油猴的版本检查静默失败，用户永远收不到更新。
+const updateUrl = one('updateURL');
+const downloadUrl = one('downloadURL');
+if (updateUrl) {
+  ok('@updateURL 用 https', /^https:\/\//.test(updateUrl), updateUrl);
+  ok('@updateURL 不用 raw.githubusercontent.com（国内不可达）',
+    !/raw\.githubusercontent\.com/.test(updateUrl), updateUrl);
+  ok('@downloadURL 与 @updateURL 一致', downloadUrl === updateUrl, downloadUrl);
+}
+
 // package.json 是版本号的第二个副本，只写不校验迟早漂移
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 ok('package.json version 与 @version 一致', pkg.version === one('version'),

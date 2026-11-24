@@ -59,7 +59,10 @@ if (!/^[\w.-]+$/.test(REPO)) {
 }
 
 const SLUG = `${OWNER}/${REPO}`;
-const RAW = `https://raw.githubusercontent.com/${SLUG}/main/civil-servant-training-assistant.user.js`;
+// 用 jsdelivr 而不是 raw.githubusercontent.com：
+// 后者在中国大陆经常不可达，油猴的自动更新会静默失败。
+// jsdelivr 的 gh 通道国内可访问，代价是 @main 有数小时缓存。
+const RAW = `https://cdn.jsdelivr.net/gh/${SLUG}@main/civil-servant-training-assistant.user.js`;
 const changes = [];
 
 function edit(file, fn) {
