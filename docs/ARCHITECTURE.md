@@ -9,7 +9,7 @@
 | 约束 | 落地方式 |
 | --- | --- |
 | 单文件、无构建、无运行时依赖 | `package.json` 不声明 dependencies；工具链只用 Node 内置模块 |
-| 体积可控 | 自检设 200 KB 预算，超出即失败 |
+| 体积可控 | 自检设 260 KB 预算，超出即失败 |
 | 版本单一来源 | 用户脚本 `@version`；`package.json` 与 CHANGELOG 由检查脚本比对 |
 | 不越权注入 | `@run-at document-idle`、`@noframes`、顶层窗口判定 |
 | 平台改版可隔离 | 选择器集中在 `SEL`，题型常量集中在 `TYPE_TEXT` |

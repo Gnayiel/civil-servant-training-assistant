@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT = join(ROOT, 'civil-servant-training-assistant.user.js');
 const CHANGELOG = join(ROOT, 'CHANGELOG.md');
-const SIZE_BUDGET = 200 * 1024;
+const SIZE_BUDGET = 260 * 1024;
 
 const argv = process.argv.slice(2);
 const CHECK_CI = argv.includes('--check-ci');

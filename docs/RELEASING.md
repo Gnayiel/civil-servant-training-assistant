@@ -29,7 +29,7 @@
 3. **统一门禁全绿**：`node tools/ci.mjs --strict`（7 步，含浏览器冒烟）。不要用 `--no-smoke` 的结果代替发布前门禁。
 4. **发版门禁自检**：`node tools/release.mjs --dry-run`，确认输出通过。
 5. **工作区干净**：`git status --porcelain` 为空。
-6. **体积检查**：脚本预算 200 KB，`selftest` 与 `release.mjs` 都会断言。
+6. **体积检查**：脚本预算 260 KB，`selftest` 与 `release.mjs` 都会断言。
 7. **外链复核**（可选，需要网络）：`node tools/check-external-links.mjs --strict`。
 
 ## 本地流程

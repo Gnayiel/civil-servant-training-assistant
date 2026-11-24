@@ -100,7 +100,9 @@ ok('VERSION 兜底值与 @version 一致', !!fallback && fallback[1] === one('ve
 // ------------------------------------------------------------------ 体积
 console.log('\n[2/4] 体积与安全基线');
 const bytes = statSync(SCRIPT).size;
-const BUDGET = 200 * 1024;
+// 260 KB：加入百度/AI 双通道答案引擎后体积上涨（引擎本身约 50 KB），
+// 这个上限的作用是「防止无意间塞进大段内联数据」，不是越小越好
+const BUDGET = 260 * 1024;
 ok(`脚本 ${(bytes / 1024).toFixed(1)} KB 在 ${BUDGET / 1024} KB 预算内`, bytes < BUDGET);
 ok('未使用 eval', !/\beval\s*\(/.test(code));
 ok('未使用 new Function', !/new\s+Function\s*\(/.test(code));

@@ -19,6 +19,24 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TMP = join(ROOT, '.tmp-docs-images');
 const SCRIPT = join(ROOT, 'civil-servant-training-assistant.user.js');
+// 面板统计行与日志里有 emoji（📊 💾 🎛 ⏹️）。无头 Chromium 默认不带 emoji 字体，
+// 缺字体时这些字符会渲染成豆腐块，README 第一张图就废了。
+// 渲染时临时挂一个 Noto Emoji（只影响配图，不进仓库、不改脚本）。
+// 放在 TMP 之外：脚本末尾会 rmSync(TMP) 清临时产物，字体若放里面，第二次运行就没了
+const FONT_DIR = join(ROOT, '.tmp-font');
+const EMOJI_FONT = join(FONT_DIR, 'NotoEmoji.woff2');
+// file:// 页面用 @font-face 引 file:// 字体会被 CORS 拦下（无头 Chrome 同样如此），
+// 所以字体必须以 data URI 内联进页面。
+function emojiFontDataUri() {
+  if (!existsSync(EMOJI_FONT)) {
+    console.warn('缺少 emoji 字体，统计行里的 📊💾🎛 会渲染成方块；'
+      + `下载到 ${EMOJI_FONT} 后重跑：\n`
+      + '  mkdir -p .tmp-font && curl -sL -o .tmp-font/NotoEmoji.woff2 '
+      + 'https://fastly.jsdelivr.net/npm/@fontsource/noto-emoji@5.0.0/files/noto-emoji-emoji-400-normal.woff2');
+    return '';
+  }
+  return 'data:font/woff2;base64,' + readFileSync(EMOJI_FONT).toString('base64');
+}
 
 function arg(name, dft = '') {
   const i = process.argv.indexOf('--' + name);
@@ -61,6 +79,7 @@ const coverage = ((seed.length / uniq.length) * 100).toFixed(1);
 console.log(`版本 ${version} · 题库 ${bankCount} 条 · 自检 ${selfTestCount} 项 · 覆盖率 ${coverage}%`);
 
 mkdirSync(TMP, { recursive: true });
+mkdirSync(FONT_DIR, { recursive: true });
 
 // ---------------------------------------------------------------- 面板 HTML
 // 复刻试卷版式 + 内联脚本 + 一段隐藏的真实结构试卷 DOM，
@@ -123,12 +142,56 @@ function panelHtml() {
 window.GM_getValue=function(k,d){const v=localStorage.getItem(k);return v===null?d:JSON.parse(v);};
 window.GM_setValue=function(k,v){localStorage.setItem(k,JSON.stringify(v));};
 window.GM_info={script:{version:'${version}'}};
-localStorage.setItem('gwx_groups', JSON.stringify({exam:true,play:true,api:false,bank:false,log:false}));
 </script>
 <style>
+  @font-face{font-family:'NotoEmojiLocal';src:url('${emojiFontDataUri()}') format('woff2');font-display:block;}
   #csta-panel-host{right:26px!important;top:92px!important;bottom:auto!important;}
-  #csta-panel-host .wrap{box-shadow:0 16px 44px rgba(10,20,35,.34)!important;}
-</style>`;
+  /* 注意：面板在 Shadow DOM 里，这里的任何选择器都进不去。
+     emoji 字体必须在影子根内部注入，见下面的 injectEmojiFont()。 */
+</style>
+<script>
+// 面板在 Shadow DOM 里：文档级 @font-face 能被影子根引用，但字体栈必须写进影子根内部才生效。
+function injectEmojiFont() {
+  var host = document.getElementById('csta-panel-host');
+  var root = host && host.shadowRoot;
+  if (!root) return false;
+  if (root.getElementById('__emoji')) return true;
+  var st = document.createElement('style');
+  st.id = '__emoji';
+  // 只把 emoji 字体挂在字体栈末尾作兜底。若把它写在前头，汉字会因为没有对应
+  // 字形而整段变成空白（上一版就是这样把面板渲染空的）。
+  st.textContent = ''
+    + '#fx-panel, #fx-panel *, #fx-panel .log-box, #fx-panel .log-line {'
+    + 'font-family:-apple-system,"Segoe UI","Microsoft YaHei","PingFang SC",'
+    + '"Source Han Sans SC","Noto Sans CJK SC",sans-serif,"NotoEmojiLocal" !important;'
+    + '}';
+  root.appendChild(st);
+  return true;
+}
+// 配图用固定演示日志：脚本真实启动日志里带着本机临时路径（.tmp-docs-images/xxx.html），
+// 会被截图进 README。这里等脚本跑完后替换成一段干净、且能说明状态的演示日志。
+window.addEventListener('load', function () {
+  setTimeout(function () {
+    injectEmojiFont();
+    var host = document.getElementById('csta-panel-host');
+    var box = host && host.shadowRoot && host.shadowRoot.querySelector('#fx-log');
+    if (!box) return;
+    var lines = [
+      ['[10:12:03] 插件已加载 v${version} · 甘肃省', 'log-info'],
+      ['[10:12:04] 检测到试卷，共 5 道题', 'log-info'],
+      ['[10:12:05] 解析到 5 道题：单选题2 / 多选题1 / 判断题2', 'log-info'],
+      ['[10:12:06] 第 9163 题作答（题库）：C', 'log-ok'],
+      ['[10:12:07] 题库命中 5/5，已按节奏填答完成', 'log-ok'],
+    ];
+    box.innerHTML = lines.map(function (x) {
+      var d = document.createElement('div');
+      d.className = 'log-line ' + x[1];
+      d.textContent = x[0];
+      return d.outerHTML;
+    }).join('');
+  }, 2500);
+});
+</script>`;
 
   return mockup
     .replace('</head>', `${stub}</head>`)

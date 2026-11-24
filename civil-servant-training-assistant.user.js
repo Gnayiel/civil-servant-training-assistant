@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.2.1
+// @version      1.3.0
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
@@ -20,6 +20,7 @@
 // @connect      dashscope.aliyuncs.com
 // @connect      open.bigmodel.cn
 // @connect      api.github.com
+// @connect      www.baidu.com
 // @noframes
 // ==/UserScript==
 
@@ -32,7 +33,7 @@
 
   // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
   // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.2.1';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.0';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';
@@ -41,20 +42,57 @@
 
   // ==================== 配置 ====================
   const CONFIG = {
+    // ---------- 答题模式（与法宣在线助手一致：先百度，最后 AI） ----------
+    answerMode: 'baidu',       // baidu | ai
+    speed: 'normal',           // slow | normal | fast
+    debug: false,              // 打开后输出通道明细等调试日志
+    forceCrossCheck: false,    // 强制二源交叉验证（每题都查第二个来源）
+
     // 答题
-    autoAnswer: true,          // 检测到试卷自动开始作答
+    // 与法宣一致：进试卷页不自动开始，点顶栏「开始」才作答。
+    // 老用户若曾把面板上的「自动作答」点成开，存储里已有 cfg_autoAnswer=true，仍会保留原行为。
+    autoAnswer: false,
     autoSubmit: false,         // 默认不自动交卷（交卷不可逆）
-    answerDelayMs: 220,        // 单题填答间隔，避免过快触发页面异常
-    enableAI: false,           // 联网 AI 兜底（需填接口）
+    autoCloseSec: 8,           // 成绩解析入库后自动关闭本页的秒数（0 = 不关）
+    answerDelayMs: 220,        // 单题填答间隔下限，避免过快触发页面异常
     aiUrl: '',
     aiModel: '',
     aiKey: '',
     netTimeoutMs: 12000,
+
+    // ---------- 请求 ----------
+    baiduTimeout: 8000,        // 百度单请求超时
+    aiTimeout: 15000,          // AI 单请求超时
+    queryBudgetMs: 20000,      // 单题网络总预算：两源共享，用完按已有结果作答
+    baiduFollowLinks: 2,       // 跟进前 N 条结果页正文
+    baiduMinChars: 400,        // 抓到的正文短于此值就换下一个搜索入口
+    baiduConfFactor: 0.9,      // 百度把握度折减系数（搜索页回显容易虚高）
+    maxResponseChars: 300000,  // 单页正文上限，防止超大页面拖慢解析
+
+    // ---------- 多源合并 ----------
+    crossCheckBelow: 0.8,      // 主源把握低于此值才追加次源交叉验证
+    crossAcceptGap: 0.3,       // 两源冲突时领先方至少要这么大优势才敢采用
+    multiSourceBonus: 0.15,    // 两源答案一致时的把握度加成
+    aiDirectAcceptConf: 0.8,   // AI 结构化答案达到此把握度时直接采信
+    multiMinChoices: 2,        // 多选题至少几个选项
+
+    // ---------- 答案抽取 ----------
+    textMatchMinLen: 2,
+    textMatchMinHits: 1,
+    textMatchShortMax: 30,
+    textMatchKeepRatio: 0.6,
+    disputeMaxEntries: 100,
+
     // 播放
     unlockBlur: true,          // 解除 window.onblur 暂停
     keepPlaying: true,         // 意外暂停时自动恢复
     muteForAutoplay: true,     // 静音以满足自动播放策略
   };
+
+  // 答题节奏档位：单题之间的间隔（毫秒）。题库类答题几乎不占时间，
+  // 快档只用于确有把握的卷子；慢档给页面反应慢的机器留余量。
+  const SPEED_NAME = { slow: '慢速', normal: '标准', fast: '快速' };
+  const SPEED_DELAY = { slow: 1200, normal: 500, fast: 150 };
 
   // ==================== 站点适配层 ====================
   /**
@@ -134,6 +172,9 @@
   // ==================== 通用工具 ====================
   const logBuf = [];
   const LOG_MAX = 400;
+  // 面板日志的纯文本副本：复制/导出日志、以及「日志 N 行」摘要都读它，
+  // 不用去 DOM 里数节点（面板收起时 DOM 还在，但测试环境可能没有面板）
+  const logLines = [];
 
   function ts() {
     const d = new Date();
@@ -145,8 +186,16 @@
     const line = `[${ts()}] ${msg}`;
     logBuf.push({ t: Date.now(), level, line });
     if (logBuf.length > LOG_MAX) logBuf.shift();
+    logLines.push(line);
+    if (logLines.length > LOG_MAX) logLines.shift();
     if (panel && panel.pushLog) panel.pushLog(line, level);
     if (level === 'error') console.warn('[' + TAG + ']', msg);
+  }
+
+  /** 调试日志：只有打开「调试」开关才落盘，避免把关键行刷掉 */
+  function dbg(msg) {
+    if (!CONFIG.debug) return;
+    log(msg, 'debug');
   }
 
   function sleep(ms) {
@@ -473,6 +522,25 @@
     return entry;
   }
 
+  /**
+   * 手动对账的解析（纯函数，自检可断言）。
+   * 支持 "1-8=对, 9=错"、"3:正确"；范围上限 200 题，防止手滑输入 1-99999 把循环跑死。
+   */
+  function parseManualVerdicts(raw) {
+    const out = {};
+    String(raw || '').split(/[,，;；\s]+/).forEach((seg) => {
+      const m = /^(\d+)(?:\s*[-~～]\s*(\d+))?\s*[=:：]\s*(对|错|正确|错误|√|×|✓|✗)$/.exec(String(seg).trim());
+      if (!m) return;
+      const a = +m[1];
+      const b = m[2] ? +m[2] : a;
+      const lo = Math.min(a, b);
+      const hi = Math.min(Math.max(a, b), lo + 200);
+      const ok = /^(对|正确|√|✓)$/.test(m[3]);
+      for (let i = lo; i <= hi; i++) out[i] = ok;
+    });
+    return out;
+  }
+
   // ==================== 考试页解析 ====================
   /**
    * 结构：
@@ -645,11 +713,474 @@
     return { ok, actual, want, matched: actual.sort().join(',') === want.sort().join(',') };
   }
 
-  // ==================== 联网取答案（可选） ====================
-  function httpPostJson(url, headers, body, timeoutMs) {
-    return new Promise((resolve, reject) => {
+  // ==================== 联网取答案：百度 / AI 双通道 ====================
+  /**
+   * 答案引擎取自「法宣在线助手」（同族脚本），判定规则逐条对齐。
+   *
+   * 为什么不各写一套：这里的每条规则都对应一个真实踩过的坑——判断题把题干回显
+   * 当答案、选项原文误命中、提示词后取首字母、百度把握度虚高……两边分开维护，
+   * 迟早会出现「同一道题在两个脚本里答得不一样」。
+   * 与本脚本的差异只有两处：不依赖任何页面选择器（站点无关）、配置键名前缀不同。
+   */
+  const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36';
+
+  // 判断题：选项措辞、正文措辞、整句判定词
+  const JUDGE_YES_OPT = /^(对|正确|是|√|✓|T|True|Y|Yes|1)$/i;
+  const JUDGE_NO_OPT = /^(错|错误|否|×|✗|X|F|False|N|No|0)$/i;
+  const JUDGE_NO_TEXT = /不正确|不对|错误|错|×|✗|否|False|^F$|^N$|^0$/i;
+  const JUDGE_YES_TEXT = /正确|对|√|✓|True|^T$|^Y$|^1$/i;
+  const JUDGE_YES_VERDICT = /^(是|对|正确|对的|是正确的|√|✓|T|True|Y|Yes|1)$/i;
+  const JUDGE_NO_VERDICT = /^(否|错|错误|不对|不正确|错的|是错误的|×|✗|F|False|N|No|0)$/i;
+  const JUDGE_LABEL_RE = /正确答案|参考答案|标准答案|正确选项|本题答案|答案|选项|解析|分析|故选|应选/g;
+
+  // 字母答案可能写成 A / ABC / A,B / A、B / A/B
+  const LETTER_SEP_RE = /^[A-Za-z](?:\s*[;；,，、/]\s*[A-Za-z])*$/;
+  const isLetterAnswer = (s) => {
+    const raw = String(s || '').trim();
+    return /^[A-Za-z]{1,8}$/.test(raw) || LETTER_SEP_RE.test(raw);
+  };
+  const lettersOf = (s) => String(s || '').toUpperCase().replace(/[^A-Z]/g, '');
+
+  const HTML_ENTITY = { nbsp: ' ', emsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"' };
+  /** 单遍解码：先解 &amp; 再解 &lt; 会把 "&amp;lt;" 解成 "<"，转义文本就被二次解码了 */
+  function decodeEntities(s) {
+    return String(s).replace(/&(nbsp|emsp|amp|lt|gt|quot);/g, (_, e) => HTML_ENTITY[e]);
+  }
+
+  /**
+   * HTML 退化成纯文本。用 DOMParser 而不是正则剥标签：实体解码、script/style、
+   * 注释、畸形标签都交给浏览器解析器，正则做这件事永远会漏。
+   * 没有 DOM 的宿主（Node 自检）回退到单遍实体解码。
+   */
+  function stripHtml(html) {
+    const src = String(html == null ? '' : html);
+    let doc = null;
+    try {
+      if (typeof DOMParser === 'function') doc = new DOMParser().parseFromString(src, 'text/html');
+    } catch (e) {
+      doc = null;
+    }
+    if (!doc || !doc.body) return decodeEntities(src).replace(/\s+/g, ' ');
+    for (const el of doc.body.querySelectorAll('script, style, noscript')) el.remove();
+    return String(doc.body.textContent || '').replace(/\s+/g, ' ');
+  }
+
+  const SRC_NAME = { ai: 'AI', baidu: '百度', cache: '缓存' };
+
+  /** 空白归一后的「扁平文本」+ 每个字符在原文里的下标 */
+  function flattenText(text) {
+    const src = String(text || '');
+    let flat = '';
+    const map = [];
+    for (let i = 0; i < src.length; i++) {
+      if (/\s/.test(src[i])) continue;
+      flat += src[i];
+      map.push(i);
+    }
+    return { flat, map };
+  }
+
+  /**
+   * 在空白归一后的文本里按 len 字片段查找并删掉原文区间。
+   * 百度会把查询词拆开回显（「正确 答案」），整段永远匹配不到；
+   * 8 字窗口足够长，不会误删无关文字，又能容忍中间插进来的空白。
+   */
+  function removeFlatFragments(text, frag, len = 8) {
+    const src = String(text || '');
+    const f = String(frag || '').replace(/\s+/g, '');
+    if (!f || f.length < len) return src;
+    const { flat, map } = flattenText(src);
+    const cuts = [];
+    const find = (needle) => {
+      let at = flat.indexOf(needle);
+      while (at >= 0) {
+        cuts.push([map[at], map[at + needle.length - 1] + 1]);
+        at = flat.indexOf(needle, at + needle.length);
+      }
+    };
+    for (let i = 0; i + len <= f.length; i += 4) find(f.slice(i, i + len));  // 步长 4 覆盖任意 8 字窗口
+    find(f.slice(-len));                                                    // 尾片段，保证结尾词也删掉
+    if (!cuts.length) return src;
+    cuts.sort((a, b) => a[0] - b[0]);
+    let out = '';
+    let pos = 0;
+    for (const [a, b] of cuts) {
+      if (b <= pos) continue;
+      if (a > pos) out += src.slice(pos, a);
+      out += ' ';
+      pos = b;
+    }
+    return out + src.slice(pos);
+  }
+
+  /**
+   * 去掉搜索结果里「我们自己的查询词」回显。
+   * 查询词里带「正确答案」字样，回显会被 extractAnswer 的提示词分支当成答案线索。
+   */
+  function stripQueryEcho(text, queries) {
+    let t = String(text || '');
+    const qs = (queries || []).map((s) => String(s || '').trim())
+      .filter((s) => s.length >= 6)
+      .sort((a, b) => b.replace(/\s+/g, '').length - a.replace(/\s+/g, '').length);  // 长的先删
+    for (const s of qs) {
+      const flat = s.replace(/\s+/g, '');
+      if (flat.length >= 8) t = removeFlatFragments(t, flat, 8);
+      t = t.split(s).join(' ');
+    }
+    return t.replace(/\s+/g, ' ').trim();
+  }
+
+  /** 题干截断：头 40 + 尾 20。只留头部会把尾部的关键限定切掉，搜出来的题经常对不上 */
+  function clipQuery(stemText, head = 40, tail = 20) {
+    const s = String(stemText || '').replace(/\s+/g, ' ').trim();
+    if (s.length <= head + tail) return s;
+    return s.slice(0, head) + '…' + s.slice(-tail);
+  }
+
+  /** 跟进页相关性：正文含题干前 20 字，或题干 bigram 覆盖率 ≥ 0.5 */
+  function followPageRelevant(pageText, stem) {
+    const page = normStem(pageText);
+    const st = normStem(stem);
+    if (!page || !st) return false;
+    if (page.includes(st.length >= 20 ? st.slice(0, 20) : st)) return true;
+    let hit = 0;
+    let total = 0;
+    for (let i = 0; i + 2 <= st.length; i++) {
+      total++;
+      if (page.includes(st.slice(i, i + 2))) hit++;
+    }
+    return total > 0 && hit / total >= 0.5;
+  }
+
+  /**
+   * 按大括号配对扫出文本里所有候选 JSON 对象。
+   * 贪婪正则 /\{[\s\S]*\}/ 只取「第一个 { 到最后一个 }」，模型先给示例再给正式答案时
+   * 整段不是合法 JSON，解析直接失败、掉回文本兜底。
+   */
+  function jsonObjectCandidates(raw) {
+    const s = String(raw || '');
+    const out = [];
+    let i = 0;
+    while (i < s.length) {
+      while (i < s.length && s[i] !== '{') i++;
+      if (i >= s.length) break;
+      let depth = 0;
+      let inStr = false;
+      let esc = false;
+      let end = -1;
+      for (let j = i; j < s.length; j++) {
+        const ch = s[j];
+        if (inStr) {
+          if (esc) esc = false;
+          else if (ch === '\\') esc = true;
+          else if (ch === '"') inStr = false;
+          continue;
+        }
+        if (ch === '"') inStr = true;
+        else if (ch === '{') depth++;
+        else if (ch === '}') {
+          depth--;
+          if (depth === 0) { end = j; break; }
+        }
+      }
+      if (end < 0) break;   // 括号没配平，后面的内容不再猜
+      out.push(s.slice(i, end + 1));
+      i = end + 1;
+    }
+    return out;
+  }
+
+  function hasJsonObject(text) {
+    for (const body of jsonObjectCandidates(text)) {
+      try {
+        const o = JSON.parse(body);
+        if (o && typeof o === 'object') return true;
+      } catch (e) { /* 继续看下一个 */ }
+    }
+    return false;
+  }
+
+  /**
+   * 从一段文本里抽答案。返回 { letters, conf, why } 或 null。
+   *
+   * 判定顺序是刻意的，不要随意调整：
+   * 明确字母 > 纯字母 > 提示词+字母 > 括号字母 > 裸字母 > 选项原文命中 > 孤立字母。
+   * 判断题单独一支，因为「是否正确」这类题干回显天然含「正确」二字。
+   */
+  function extractAnswer(raw, options, type) {
+    if (!raw || !options || !options.length) return null;
+    const letters = options.map((o) => o.letter);
+    const s = String(raw).trim();
+    if (!s) return null;
+
+    // 把含字母的片段收敛成合法答案：去掉不在选项里的字母并去重排序
+    const shape = (frag) => {
+      const up = [...new Set(String(frag).toUpperCase().replace(/[^A-Z]/g, '').split(''))]
+        .filter((l) => letters.includes(l)).sort().join('');
+      if (!up) return null;
+      return type === 'multi' ? up : up[0];
+    };
+    const hit = (frag, conf, why) => {
+      const l = shape(frag);
+      return l ? { letters: l, conf, why } : null;
+    };
+    // 提示词分支专用：非多选出现多个字母时宁可不答，也不能排序后取首字母。
+    // 否则「正确答案：B，A项错误」会被抽成 A。
+    const shapeKeyed = (frag) => {
+      const up = [...new Set(String(frag).toUpperCase().replace(/[^A-Z]/g, '').split(''))]
+        .filter((l) => letters.includes(l)).sort().join('');
+      if (!up) return null;
+      if (type !== 'multi' && up.length > 1) return null;
+      return up;
+    };
+
+    // 1) 判断题
+    let judgeEchoOnly = false;
+    if (type === 'judge') {
+      const yes = options.find((o) => JUDGE_YES_OPT.test(o.text));
+      const no = options.find((o) => JUDGE_NO_OPT.test(o.text));
+      const keyed = s.match(/(?:正确答案|参考答案|标准答案|本题答案|答案)\s*(?:[是为]|[:：]|\s)*\s*([A-Za-z]{1,8})/);
+      if (keyed) {
+        const r = hit(keyed[1], 0.9, '判断题：明确答案字母');
+        if (r) return r;
+      }
+      const head = s.slice(0, 40).replace(JUDGE_LABEL_RE, ' ');
+      // 「整句就是一个判定词」时优先锚定式判：这样「是 / 否」这种单字选项不会漏
+      const verdict = head.replace(/[\s:：。，,；;、！!？?"'“”]/g, '');
+      if (no && JUDGE_NO_VERDICT.test(verdict)) return { letters: no.letter, conf: 0.85, why: '判断题否定式（单字判定）' };
+      if (yes && JUDGE_YES_VERDICT.test(verdict)) return { letters: yes.letter, conf: 0.85, why: '判断题肯定式（单字判定）' };
+      // 题干带「是否」的是非题不能按语义判：问句只采信「？」之后的回答部分
+      const askedWhether = /是否/.test(head);
+      if (askedWhether) {
+        judgeEchoOnly = true;
+        const tail = s.split(/[？?]/).slice(1).join('？').replace(JUDGE_LABEL_RE, ' ');
+        if (tail) {
+          if (no && JUDGE_NO_TEXT.test(tail)) return { letters: no.letter, conf: 0.7, why: '判断题否定式（问句后的回答）' };
+          if (yes && JUDGE_YES_TEXT.test(tail)) return { letters: yes.letter, conf: 0.7, why: '判断题肯定式（问句后的回答）' };
+        }
+      } else {
+        // 语义分支把握度压到 crossCheckBelow 以下，确保会去查第二源
+        if (no && JUDGE_NO_TEXT.test(head)) return { letters: no.letter, conf: 0.7, why: '判断题否定式' };
+        if (yes && JUDGE_YES_TEXT.test(head)) return { letters: yes.letter, conf: 0.7, why: '判断题肯定式' };
+      }
+    }
+
+    // 2) 整段就是字母
+    const letterish = s.replace(/[\s.。、]+$/, '');
+    if (isLetterAnswer(letterish)) {
+      const r = hit(lettersOf(letterish), 0.95, '纯字母');
+      if (r) return r;
+    }
+
+    // 3) 提示词后的字母。必须是单层字符类：写成 (?:…|[\s]*)* 时超长空白串会灾难性回溯
+    const KEYED = /(?:正确答案|参考答案|标准答案|正确选项|本题答案|答案|应选|选择|选项|判断|结论|选)[是为:：\]】）)］\s]*([A-Za-z](?:[\s,，、/和及与]*[A-Za-z])*)/;
+    const keyed = s.match(KEYED);
+    if (keyed) {
+      // 「正确答案：B，A项错误」的捕获串是「B，A」；末尾字母紧跟 项/个/条/题 时是干扰项描述
+      let frag = keyed[1];
+      const tail = s.slice(keyed.index + keyed[0].length).replace(/^\s+/, '');
+      if (/^[项个条题]/.test(tail)) frag = frag.replace(/[A-Za-z](?=[^A-Za-z]*$)/, '');
+      const kl = shapeKeyed(frag);
+      if (kl) return { letters: kl, conf: 0.9, why: '提示词+字母' };
+    }
+
+    // 4) 括号形式：（C）【AB】[D]
+    const bracketed = s.match(/[（(【\[<]\s*([A-Za-z](?:[\s,，、/和及与]*[A-Za-z])*)\s*[)）】\]>]/);
+    if (bracketed) {
+      const r = hit(bracketed[1], 0.85, '括号字母');
+      if (r) return r;
+    }
+
+    // 5) 句首/句尾的裸字母。只认「片段本身就是大写字母」，否则 "The answer is B"
+    //    会从第一个单词开始吞，整串过滤后取到 A。
+    const strictUp = (frag) => {
+      const txt = String(frag).trim();
+      if (!/^[A-Z](?:[\s,，、/和及与]*[A-Z])*$/.test(txt)) return '';
+      const up = txt.replace(/[^A-Z]/g, '');
+      return up && up.split('').every((l) => letters.includes(l)) ? up : '';
+    };
+    const bareHead = s.match(/^\s*([A-Z](?:[\s,，、/和及与]*[A-Z])*)\s*[.。、:：]?(?![A-Za-z])/);
+    const bareTail = s.match(/(?:^|[^A-Za-z])([A-Z](?:[\s,，、/和及与]*[A-Z])*)\s*[.。]?\s*$/);
+    const bareFrag = (bareHead && strictUp(bareHead[1])) || (bareTail && strictUp(bareTail[1]));
+    if (bareFrag) {
+      return {
+        letters: type === 'multi' ? bareFrag : bareFrag[0],
+        conf: 0.75,   // 低于 crossCheckBelow，保证会去核对第二源
+        why: '裸字母',
+      };
+    }
+
+    // 5.5) 问句回显且没给回答：到此为止。「是否正确」的题干天然含「正确」，
+    //      继续用选项原文命中会把整道题干判成选「正确」。
+    if (judgeEchoOnly) return null;
+
+    // 6) 选项原文命中。单选的命中只在唯一命中时才敢用：百度结果页常把题干
+    //    连同 A/B/C/D 一起回显，那时每个选项都命中一次，按长度取最长等于随机。
+    const MINLEN = CONFIG.textMatchMinLen;
+    const MINHITS = CONFIG.textMatchMinHits;
+    const cands = options
+      .filter((o) => o.text && o.text.length >= 2)
+      .map((o) => ({ l: o.letter, hits: s.split(o.text).length - 1, len: o.text.length }))
+      .filter((x) => {
+        if (x.hits < MINHITS) return false;
+        if (x.len < MINLEN && x.hits < 2) return false;
+        if (x.len <= 2 && s.length > CONFIG.textMatchShortMax && x.hits < 2) return false;
+        return true;
+      });
+    const hitCands = type === 'multi' ? cands : (cands.length === 1 ? cands : []);
+    if (hitCands.length) {
+      const score = (x) => x.hits * x.len;
+      const best = Math.max(...hitCands.map(score));
+      const kept = hitCands.filter((x) => score(x) >= best * CONFIG.textMatchKeepRatio)
+        .map((x) => x.l).sort().join('');
+      if (kept) {
+        const totalHits = hitCands.reduce((a, x) => a + x.hits, 0);
+        return {
+          letters: type === 'multi' ? kept : kept[0],
+          conf: Math.min(0.8, 0.45 + 0.1 * totalHits),
+          why: '选项原文命中',
+        };
+      }
+    }
+
+    // 7) 兜底：文本里独立出现的单个字母（把握最低）
+    const tokens = [...new Set(
+      [...s.toUpperCase().matchAll(/(?:^|[^A-Z])([A-Z])(?![A-Z])/g)].map((m) => m[1]),
+    )].filter((l) => letters.includes(l)).sort();
+    if (tokens.length) {
+      // 单选/判断同时出现多个候选字母时不硬猜；多选仍按全部出现处理
+      if (type !== 'multi' && tokens.length > 1) return null;
+      return {
+        letters: type === 'multi' ? tokens.join('') : tokens[0],
+        conf: 0.35,
+        why: '孤立字母',
+      };
+    }
+    return null;
+  }
+
+  /** 兼容旧调用：只要字母 */
+  function normalizeAnswer(raw, options, type) {
+    const r = extractAnswer(raw, options, type);
+    return r ? r.letters : null;
+  }
+
+  /**
+   * 多源结果交叉验证：
+   * - 候选必须校验过（字母在选项范围内、多选不能只给一个）
+   * - 同答案来源合并并提置信度（封顶 1）
+   * - 冲突时只有明显更优的才敢用，否则宁可不答
+   */
+  function mergeCandidates(cands, type, options, onDispute = null) {
+    const letters = options.map((o) => o.letter);
+    const usable = (cands || []).filter((c) => c && c.letters
+      && c.letters.split('').every((l) => letters.includes(l))
+      && !(type === 'multi' && c.letters.length < 2));
+    if (!usable.length) return null;
+
+    const groups = {};
+    usable.forEach((c) => {
+      (groups[c.letters] = groups[c.letters] || []).push(c);
+    });
+    const ranked = Object.entries(groups).map(([k, v]) => {
+      const srcs = [...new Set(v.map((x) => x.src))];
+      return {
+        letters: k,
+        // 封顶 1：两源一致时 0.9 + 0.15 会到 1.05，超出把握度语义还会把 gap 比较带偏
+        conf: Math.min(1, Math.max(...v.map((x) => (x.conf == null ? 0.5 : x.conf)))
+          + (srcs.length > 1 ? CONFIG.multiSourceBonus : 0)),
+        srcs,
+        structured: v.some((x) => x && x.structured === true),
+        why: v[0].why,
+      };
+    }).sort((a, b) => b.conf - a.conf);
+
+    if (ranked.length === 1) return ranked[0];
+    // AI 结构化 JSON 且把握足够 → 直接采信
+    if (ranked[0].srcs.length === 1 && ranked[0].srcs[0] === 'ai'
+      && ranked[0].structured === true && ranked[0].conf >= CONFIG.aiDirectAcceptConf) {
+      return ranked[0];
+    }
+    // 百度结果统一乘了 baiduConfFactor，比较前要除回去，否则「两把尺子」永远拉不开差距
+    const eff = (r) => (r.srcs.length === 1 && r.srcs[0] === 'baidu'
+      ? Math.min(1, r.conf / (CONFIG.baiduConfFactor || 1))
+      : r.conf);
+    const gap = eff(ranked[0]) - eff(ranked[1]);
+    if (gap >= CONFIG.crossAcceptGap) return ranked[0];
+    // 两源都给了候选、把握都不低却拉不开差距：记一条争议供事后复盘，但不作答（宁可不答也不赌）
+    const srcPool = new Set([...(ranked[0].srcs || []), ...(ranked[1].srcs || [])]);
+    if (typeof onDispute === 'function' && srcPool.size > 1
+      && ranked[0].conf >= 0.8 && ranked[1].conf >= 0.8) {
+      try { onDispute(ranked); } catch (e) { log('争议记录失败：' + (e && e.message ? e.message : e), 'warn'); }
+    }
+    return null;
+  }
+
+  // ---------------------------------------------------------------- 争议题
+  function loadDisputes() {
+    const raw = store.get('disputes', []);
+    return Array.isArray(raw) ? raw.filter((x) => x && typeof x === 'object') : [];
+  }
+
+  /** 同题干 + 同候选只更新时间戳并挪到最前，最多留 max 条 */
+  function addDispute(list, item, now = Date.now(), max = CONFIG.disputeMaxEntries) {
+    if (!item || typeof item !== 'object') return Array.isArray(list) ? list.slice() : [];
+    const sig = (x) => (x && x.stem) || '';
+    const out = (Array.isArray(list) ? list : []).filter((x) => x && typeof x === 'object' && sig(x) !== sig(item));
+    out.unshift({ ...item, ts: +now || Date.now() });
+    return out.slice(0, Math.max(1, Math.floor(+max) || 100));
+  }
+
+  /** 只做观测，不改变作答结果 */
+  function recordDispute(stem, type, options, ranked) {
+    const top = (ranked || []).slice(0, 2);
+    if (top.length < 2) return null;
+    const item = {
+      stem: pureStem(stem),
+      type,
+      options: (options || []).map((o) => ({ letter: o.letter, text: o.text })),
+      cands: top.map((r) => ({ letters: r.letters, conf: r.conf, srcs: r.srcs, why: r.why || '' })),
+      why: '两源答案冲突（差距不足 crossAcceptGap）',
+    };
+    const list = addDispute(loadDisputes(), item);
+    store.set('disputes', list);
+    log('记录争议题：' + item.cands.map((c) => `${c.letters}(${Math.round(c.conf * 100)}%)`).join(' vs ')
+      + `（共 ${list.length} 条）`, 'warn');
+    return { ...item, ts: Date.now() };
+  }
+
+  // ---------------------------------------------------------------- 请求
+  /** 单次 GET。超时按「配置值」与「本题剩余预算」取小，避免一题拖成几分钟 */
+  function httpGet(url, ctx = {}) {
+    const left = ctx.deadline ? Math.max(0, ctx.deadline - Date.now()) : CONFIG.baiduTimeout;
+    const timeout = Math.max(1000, Math.min(ctx.timeout || CONFIG.baiduTimeout, left || 1000));
+    return new Promise((resolve) => {
       if (typeof GM_xmlhttpRequest !== 'function') {
-        reject(new Error('当前环境不支持 GM_xmlhttpRequest'));
+        resolve({ ok: false, status: 0, text: '', err: 'no-gm', note: '当前环境不支持 GM_xmlhttpRequest' });
+        return;
+      }
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url,
+        headers: ctx.headers || {},
+        timeout,
+        onload: (r) => {
+          // 超大页面只留前 30 万字符：正文关键词都在前面，全量留在内存里只会拖慢解析
+          const text = String(r.responseText || '').slice(0, CONFIG.maxResponseChars);
+          resolve({ ok: r.status >= 200 && r.status < 300, status: r.status, text });
+        },
+        onerror: () => resolve({ ok: false, status: 0, text: '', err: 'network' }),
+        ontimeout: () => resolve({ ok: false, status: 0, text: '', err: 'timeout' }),
+      });
+    });
+  }
+
+  function httpPost(url, headers, body, ctx = {}) {
+    const left = ctx.deadline ? Math.max(0, ctx.deadline - Date.now()) : (ctx.timeout || CONFIG.aiTimeout);
+    const timeout = Math.max(1000, Math.min(ctx.timeout || CONFIG.aiTimeout, left || 1000));
+    return new Promise((resolve) => {
+      if (typeof GM_xmlhttpRequest !== 'function') {
+        resolve({ ok: false, status: 0, text: '', err: 'no-gm', note: '当前环境不支持 GM_xmlhttpRequest' });
         return;
       }
       GM_xmlhttpRequest({
@@ -657,62 +1188,251 @@
         url,
         headers,
         data: body,
-        timeout: timeoutMs,
-        onload: (r) => resolve({ status: r.status, text: r.responseText }),
-        onerror: () => reject(new Error('网络错误')),
-        ontimeout: () => reject(new Error('请求超时')),
+        timeout,
+        onload: (r) => resolve({
+          ok: r.status >= 200 && r.status < 300,
+          status: r.status,
+          text: String(r.responseText || ''),
+        }),
+        onerror: () => resolve({ ok: false, status: 0, text: '', err: 'network' }),
+        ontimeout: () => resolve({ ok: false, status: 0, text: '', err: 'timeout' }),
       });
     });
   }
 
-  async function queryAI(q) {
-    if (!CONFIG.enableAI || !CONFIG.aiUrl || !CONFIG.aiKey) return null;
-    const opts = q.options.map((o) => `${o.letter}. ${o.text}`).join('\n');
-    const prompt = [
-      '你是政治理论考试助手。请给出下列题目的正确答案。',
-      `题型：${TYPE_TEXT[q.type] || q.type}`,
-      `题目：${q.stem}`,
-      '选项：',
-      opts,
-      '只输出 JSON：{"answer":["A"],"confidence":0.0,"reason":"简述"}。多选可多个字母。',
-    ].join('\n');
-    try {
-      const resp = await httpPostJson(CONFIG.aiUrl, {
-        'Content-Type': 'application/json',
-        Authorization: 'Bearer ' + CONFIG.aiKey,
-      }, JSON.stringify({
-        model: CONFIG.aiModel,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0,
-      }), CONFIG.netTimeoutMs);
-      if (resp.status < 200 || resp.status >= 300) {
-        log(`AI 接口返回 ${resp.status}`, 'error');
-        return null;
-      }
-      const data = JSON.parse(resp.text);
-      const content = (data.choices && data.choices[0] && data.choices[0].message
-        && data.choices[0].message.content) || '';
-      const jm = content.match(/\{[\s\S]*\}/);
-      if (!jm) return null;
-      const parsed = JSON.parse(jm[0]);
-      const letters = (parsed.answer || []).map((x) => String(x).toUpperCase());
-      if (!letters.length) return null;
-      const picked = q.options.filter((o) => letters.includes(o.letter));
-      if (!picked.length) return null;
-      return {
-        picked,
-        letters,
-        texts: picked.map((o) => o.text),
-        conf: Number(parsed.confidence) || 0.6,
-        source: 'ai',
-      };
-    } catch (e) {
-      log('AI 查询失败：' + e.message, 'error');
-      return null;
-    }
+  function failText(r, who) {
+    if (!r) return who + '：无响应';
+    if (r.err === 'timeout') return who + '：请求超时';
+    if (r.err === 'network') return who + '：网络错误或被 @connect 白名单拦截';
+    if (r.err === 'no-gm') return who + '：当前环境不支持跨域请求';
+    return who + (r.status ? `：HTTP ${r.status}` : '：请求失败');
   }
 
-  // 判定答案选择是否合理（用于自动作答）
+  // ---------------------------------------------------------------- 百度通道
+  /** 百度：两个入口 + 只跟进「确实在讲这道题」的结果页正文 */
+  async function queryBaidu(stem, ctx = {}) {
+    const q = clipQuery(pureStem(stem));   // 头 40 + 尾 20，题干尾部的限定词常是关键
+    const entries = [
+      `https://www.baidu.com/s?wd=${encodeURIComponent(q + ' 正确答案')}`,
+      `https://www.baidu.com/s?wd=${encodeURIComponent(q + ' 答案')}`,
+    ];
+    const queries = [q + ' 正确答案', q + ' 答案', q];   // 需要从正文里剔除的查询词回显
+    let text = '';
+    let note = '';
+    let budgetSpent = false;
+    let followWarned = false;
+    for (const url of entries) {
+      if (ctx.deadline && Date.now() >= ctx.deadline) { budgetSpent = true; note = '本题网络预算已用完'; break; }
+      const r = await httpGet(url, { ...ctx, headers: { 'User-Agent': UA } });
+      if (!r.ok) { note = failText(r, '百度'); continue; }
+      // 反爬/验证码/跳转页识别
+      if (/安全验证|请输入验证码|访问异常|网络不给力/.test(r.text.slice(0, 3000))) {
+        note = '百度要求安全验证（反爬），本次未取到结果';
+        continue;
+      }
+      if (!/class="result|result c-container|c-container/.test(r.text)) {
+        note = '百度未返回搜索结果（可能被跳转或需登录）';
+      }
+      text += '\n' + stripQueryEcho(stripHtml(r.text), queries);
+      // 跟进前 N 条结果页正文，避免只看标题摘要
+      const links = [...r.text.matchAll(/href="(https?:\/\/(?:www\.)?baidu\.com\/link\?url=[^"]+)"/g)]
+        .map((m) => m[1].replace(/&amp;/g, '&'))
+        .slice(0, CONFIG.baiduFollowLinks);
+      for (const u of links) {
+        if (ctx.deadline && Date.now() >= ctx.deadline) { budgetSpent = true; break; }
+        const pr = await httpGet(u, { ...ctx, headers: { 'User-Agent': UA } });
+        if (!pr.ok || !pr.text) {
+          // 跟进页是站外页面，@connect 只放行 www.baidu.com 时会被拦。
+          // 每题提示一次，但只用于摘要作答也够，不算失败。
+          if (!followWarned) {
+            followWarned = true;
+            log('百度跟进页读取失败（' + failText(pr, '结果页')
+              + '），仅使用搜索摘要作答；不影响本题', 'debug');
+          }
+          continue;
+        }
+        const pageText = stripHtml(pr.text);
+        if (!followPageRelevant(pageText, stem)) { log('跳过与本题无关的跟进页（广告/导航）', 'debug'); continue; }
+        text += '\n' + stripQueryEcho(pageText, queries);   // 两段正文间留换行，避免边界粘连成假答案
+      }
+      if (budgetSpent) break;
+      if (text.trim().length >= CONFIG.baiduMinChars) break;
+    }
+    return { text: text.trim() || null, note, budgetSpent };
+  }
+
+  // ---------------------------------------------------------------- AI 通道
+  /** 解析 AI 的结构化回答：优先 JSON，兼容 ```json 代码块与前后解释文字 */
+  function extractAIAnswer(content, options, type) {
+    const raw = String(content || '').trim();
+    const letters = options.map((o) => o.letter);
+    if (!raw) return null;
+    const bodies = [...raw.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((m) => m[1]);
+    bodies.push(...jsonObjectCandidates(raw));
+    for (const body of bodies) {
+      let obj = null;
+      try { obj = JSON.parse(String(body).trim()); } catch (e) { continue; }
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) continue;
+      const ansRaw = String(obj.answer || obj.letters || obj['答案'] || '').toUpperCase().replace(/[^A-Z]/g, '');
+      if (!ansRaw) continue;
+      if (!ansRaw.split('').every((l) => letters.includes(l))) continue;
+      const ans = [...new Set(ansRaw.split(''))].sort().join('');
+      // 单选/判断给了多个字母 = 模型自相矛盾，丢弃这个候选（不要静默取第一个）
+      if (type !== 'multi' && ans.length !== 1) continue;
+      if (type === 'multi' && ans.length < CONFIG.multiMinChoices) continue;
+      // confidence 缺失/越界才用 0.9；显式给了 0 就采信 0（不能 `|| 0.9`）
+      const rawConf = Number(obj.confidence);
+      const conf = (obj.confidence !== undefined && obj.confidence !== null
+        && Number.isFinite(rawConf) && rawConf >= 0 && rawConf <= 1) ? rawConf : 0.9;
+      const reason = obj.reason || obj['理由'] || '';
+      return {
+        letters: ans,
+        conf,
+        structured: true,
+        why: `AI 结构化${reason ? `：${String(reason).slice(0, 40)}` : ''}`,
+      };
+    }
+    // 不是 JSON → 退回文本抽取（兼容不支持 JSON 输出的接口）
+    const fb = extractAnswer(raw, options, type);
+    return fb ? { ...fb, structured: false, why: `${fb.why}（AI 文本兜底）` } : null;
+  }
+
+  /** AI：模型与参数可配，提问模板按题型区分 */
+  async function queryAI(stem, options, type, ctx = {}) {
+    const url = CONFIG.aiUrl;
+    const key = CONFIG.aiKey;
+    if (!url) return { text: null, note: '未设置接口地址，AI 模式不可用' };
+    if (!key) return { text: null, note: '未设置 API Key，AI 模式不可用' };
+
+    const typeTxt = type === 'multi' ? '多选题' : type === 'judge' ? '判断题' : '单选题';
+    const rule = type === 'multi'
+      ? '本题是多选题，正确答案有 2 个或以上，必须给出全部正确项；只给一个是错的。'
+      : type === 'judge'
+        ? '本题是判断题，请按选项字母作答（选项文本为「对/错」或「正确/错误」）。'
+        : '本题只有一个正确选项。';
+    let prompt = `你是考试答题助手。下面是${typeTxt}，请从选项中选出正确答案。\n${rule}\n\n题目：${stem}\n选项：\n`;
+    options.forEach((o) => { prompt += `${o.letter}. ${o.text}\n`; });
+    // 结构化输出：答案与把握度分开给，脚本不用再从自然语言里猜置信度
+    prompt += '\n只输出一个 JSON 对象，不要代码块外的任何文字，也不要复述题目：'
+      + '{"answer":"X","confidence":0.9,"reason":"一句话理由"}'
+      + `（answer 的字母必须来自 ${options.map((o) => o.letter).join('/')}；多选写成 "AB"；`
+      + 'confidence 是你对答案的把握，0~1 之间的小数）';
+
+    const r = await httpPost(url, {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + key,
+    }, JSON.stringify({
+      model: CONFIG.aiModel || 'deepseek-chat',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.1,
+      max_tokens: 512,
+    }), ctx);
+
+    if (!r.ok) return { text: null, note: failText(r, 'AI 接口') };
+
+    let data = null;
+    try { data = JSON.parse(r.text); } catch (e) {
+      return { text: null, note: 'AI 返回的不是合法 JSON，请检查接口地址是否兼容 OpenAI 格式' };
+    }
+    const msg = (data && data.choices && data.choices[0] && data.choices[0].message) || {};
+    // 推理模型的正文可能只在 reasoning_content；但推理过程是自然语言，
+    // 整段当答案会让文本兜底把「推理里提到的某个字母」当成答案，所以只在其中确实含 JSON 时才用
+    let content = String(msg.content || '').trim();
+    if (!content) {
+      const reasoning = String(msg.reasoning_content || '').trim();
+      if (reasoning && hasJsonObject(reasoning)) content = reasoning;
+    }
+    if (!content) {
+      const apiErr = data && data.error && (data.error.message || data.error.code);
+      return { text: null, note: apiErr ? `AI 返回错误：${String(apiErr).slice(0, 120)}` : 'AI 返回内容为空' };
+    }
+    return { text: content, note: '' };
+  }
+
+  // ---------------------------------------------------------------- 查询链
+  /**
+   * 按面板模式决定主源，另一源作为备源：
+   *   1. 主源没结果/失败 → 降级到备源
+   *   2. 主源把握不足（或题目是多选）→ 追加备源交叉验证
+   *   3. 两源共享「单题网络预算」，用完立刻按已有结果作答
+   * 「先百度，最后 AI」就是默认模式（answerMode = 'baidu'）下的自然顺序。
+   */
+  async function queryAnswer(stem, options, type, opts = {}) {
+    const notes = [];
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      return { cand: null, notes: ['当前离线，已跳过联网查询'], budget: false };
+    }
+    const budgetMs = Math.max(1000, +CONFIG.queryBudgetMs || 20000);
+    const deadline = Date.now() + budgetMs;
+    const order = CONFIG.answerMode === 'ai' ? ['ai', 'baidu'] : ['baidu', 'ai'];
+    const forceTwo = !!opts.forceTwoSources || !!CONFIG.forceCrossCheck;
+    const cands = [];
+    let budgetSpent = false;
+    let dispute = null;
+
+    const runSource = (src) => (src === 'ai'
+      ? queryAI(stem, options, type, { deadline })
+      : queryBaidu(stem, { deadline }));
+
+    const absorb = (src, r) => {
+      if (!r) { notes.push(`${SRC_NAME[src]}：无响应`); return null; }
+      if (r.budgetSpent) budgetSpent = true;
+      if (!r.text) {
+        notes.push(`${SRC_NAME[src]}：${r.note || '未搜到相关内容'}`);
+        return null;
+      }
+      const c = src === 'ai'
+        ? extractAIAnswer(r.text, options, type)
+        : extractAnswer(r.text, options, type);
+      if (!c) { notes.push(`${SRC_NAME[src]}：有返回但解析不出答案`); return null; }
+      if (src === 'baidu') {
+        // 搜索页回显容易虚高，统一折减后再参与合并
+        c.conf = Math.max(0.3, Math.round(c.conf * CONFIG.baiduConfFactor * 100) / 100);
+        c.why = `${c.why}·已按百度可信度折减`;
+      }
+      cands.push({ ...c, src });
+      notes.push(`${SRC_NAME[src]}：${c.letters}（${c.why}，把握 ${Math.round(c.conf * 100)}%）`);
+      return c;
+    };
+
+    // 需要两个源的场景（强制二源 / 多选）并行跑，共享同一个 deadline
+    if (forceTwo || type === 'multi') {
+      const settled = await Promise.allSettled(order.map((src) => runSource(src)));
+      settled.forEach((x, i) => {
+        absorb(order[i], x.status === 'fulfilled'
+          ? x.value
+          : { text: null, note: `请求异常：${x.reason && x.reason.message ? x.reason.message : x.reason}` });
+      });
+    } else {
+      // 串行：主源把握够就不打扰备源
+      let needSecond = true;
+      for (const src of order) {
+        if (!needSecond) break;
+        if (Date.now() >= deadline) {
+          budgetSpent = true;
+          notes.push(`本题网络预算（${Math.round(budgetMs / 1000)} 秒）已用完，先按已获得的结果作答`);
+          break;
+        }
+        let r = null;
+        try { r = await runSource(src); } catch (err) {
+          r = { text: null, note: `请求异常：${err && err.message ? err.message : err}` };
+        }
+        const c = absorb(src, r);
+        if (!c) continue;
+        needSecond = c.conf < CONFIG.crossCheckBelow;
+      }
+    }
+
+    const merged = mergeCandidates(cands, type, options, (ranked) => {
+      dispute = recordDispute(stem, type, options, ranked);
+    });
+    return { cand: merged, notes, budget: budgetSpent, dispute };
+  }
+
+  /**
+   * 决定一道题怎么答：题库优先，其次按当前模式走联网双通道。
+   * 题库命中但选项对不上时（题库来自另一份卷子、选项顺序变了）继续联网，不硬套。
+   */
   async function decide(q) {
     const entry = lookupBank(q.stem);
     if (entry) {
@@ -720,13 +1440,24 @@
       if (picked && picked.length) {
         return { picked, texts: picked.map((o) => o.text), letters: picked.map((o) => o.letter), source: 'bank', conf: 1 };
       }
-      log(`题库命中但选项对不上：${q.stem.slice(0, 20)}…`);
+      log(`题库命中但选项对不上，转联网：${q.stem.slice(0, 20)}…`, 'warn');
     }
-    if (CONFIG.enableAI) {
-      const ai = await queryAI(q);
-      if (ai) return ai;
+    const r = await queryAnswer(q.stem, q.options, q.type, { forceTwoSources: CONFIG.forceCrossCheck });
+    r.notes.forEach((n) => log(n, 'debug'));   // 只有开调试才逐条显示通道明细
+    if (!r.cand) {
+      if (r.notes.length) log(`${q.qid} 题未取到答案：${r.notes.join('；')}`, 'warn');
+      return null;
     }
-    return null;
+    const picked = q.options.filter((o) => r.cand.letters.includes(o.letter));
+    if (!picked.length) return null;
+    return {
+      picked,
+      letters: picked.map((o) => o.letter),
+      texts: picked.map((o) => o.text),
+      source: r.cand.srcs.join('+'),
+      conf: r.cand.conf,
+      why: r.cand.why,
+    };
   }
 
   // ==================== 交卷 ====================
@@ -771,6 +1502,31 @@
   // ==================== 考试流程 ====================
   let examRunning = false;
   let examAbort = false;
+  // 暂停：只在两题之间生效（已点的选项不回滚）。与法宣的 paused 语义一致。
+  let pausedFlag = false;
+  // 本场作答记录（面板「已答 N」与手动对账都读它）
+  const history = [];
+  // 本次试卷总题数，用于进度与「已答 N/M」
+  let totalQ = 0;
+  // 自动关闭本页的倒计时句柄
+  let autoCloseTimer = null;
+
+  /**
+   * 顶栏两个按钮的文案与可用性（纯函数，自检可断言）。
+   * 与法宣的 runStatusLabel / syncRunBtns 同一套语义：运行中才允许暂停。
+   */
+  function runBtnLabels(running, isPaused) {
+    return {
+      stop: running ? '停止' : '开始',
+      pause: isPaused ? '继续' : '暂停',
+      pauseDisabled: !running,
+    };
+  }
+
+  /** 暂停等待：暂停期间不消耗预算，继续后立刻返回 */
+  async function waitWhilePaused() {
+    while (pausedFlag && !examAbort) await sleep(200);
+  }
 
   async function runExam() {
     if (examRunning) {
@@ -786,9 +1542,12 @@
     }
     examRunning = true;
     examAbort = false;
-    panel.setState('正在作答…');
+    pausedFlag = false;
+    totalQ = questions.length;
+    panel.setState('答题中');
     panel.setProgress(0, questions.length);
     panel.setTone('busy');
+    panel.refresh();
 
     // 填空/问答等题型本脚本不处理，页面若有就禁用自动交卷，避免交白卷
     const blankInputs = document.querySelectorAll(
@@ -814,6 +1573,8 @@
           log('已中止作答');
           break;
         }
+        await waitWhilePaused();
+        if (examAbort) break;
         const decided = await decide(q);
         if (!decided) {
           unknown++;
@@ -824,22 +1585,30 @@
         const r = applyAnswer(q, decided.picked);
         if (r.matched) {
           done++;
-          const srcLabel = { bank: '题库', ai: 'AI' }[decided.source] || decided.source;
-          log(`第 ${q.qid} 题作答（${srcLabel}）：${r.want.join(',')}`);
+          const srcLabel = { bank: '题库' }[decided.source] || decided.source;
+          const conf = decided.conf != null ? ` · 把握 ${Math.round(decided.conf * 100)}%` : '';
+          log(`第 ${q.qid} 题作答（${srcLabel}）：${r.want.join(',')}${conf}`);
+          history.push({
+            qid: q.qid, stem: q.stem, type: q.type,
+            picked: decided.texts, letters: r.want, ok: true, source: decided.source, at: Date.now(),
+          });
         } else {
           unknown++;
           unknownList.push(q);
           log(`第 ${q.qid} 题回读不一致（期望 ${r.want.join(',')}，实际 ${r.actual.join(',')}）`, 'warn');
         }
-        await sleep(CONFIG.answerDelayMs);
+        // 节奏档位决定题间间隔；再叠加一个很小的下限，避免连续填答把页面事件打乱
+        await sleep(Math.max(SPEED_DELAY[CONFIG.speed] || SPEED_DELAY.normal, CONFIG.answerDelayMs));
+        panel.setProgress(done, questions.length);
+        panel.refresh();
       }
 
-      panel.setState(`作答 ${done}/${questions.length}`);
+      // 状态词与法宣一致：跑完回到「已停止」，进度条与统计行承担数字
+      panel.setState('已停止');
       panel.setProgress(done, questions.length);
-      // 分类摘要要跟着刷新，否则「答题」那格一直停在开跑前的 0/5
       panel.refresh();
       panel.setTone(unknown ? 'busy' : 'idle');
-      log(`作答完成：${done} 题已填，${unknown} 题未定`);
+      log(`作答完成：${done}/${questions.length} 题已填，${unknown} 题未定`);
 
       // 记录本次作答，交卷后用于对账
       store.set('lastExam', {
@@ -872,6 +1641,7 @@
           panel.setTone('idle');
           // 通过后必须对账，否则开着自动交卷的人题库永远不增长
           reconcileAfterPass();
+          scheduleAutoClose();
         } else {
           panel.setState('未通过，可重考');
           panel.setTone('err');
@@ -888,7 +1658,32 @@
     } finally {
       examRunning = false;
       examAbort = false;
+      pausedFlag = false;
+      panel.refresh();
     }
+  }
+
+  /**
+   * 成绩解析/入库后自动关闭本页。
+   * 浏览器通常不允许脚本关闭非自开窗口，所以只是「尽力而为」：
+   * 关不掉就保持原样，不弹任何提示。
+   */
+  function scheduleAutoClose() {
+    if (autoCloseTimer) { clearTimeout(autoCloseTimer); autoCloseTimer = null; }
+    const sec = +CONFIG.autoCloseSec || 0;
+    if (!sec) return;
+    log(`🕒 ${sec} 秒后自动关闭本页（可在「题库与本场」里改成不关）`);
+    autoCloseTimer = setTimeout(() => {
+      autoCloseTimer = null;
+      try { window.close(); } catch (e) { /* 浏览器不允许，忽略 */ }
+    }, sec * 1000);
+  }
+
+  function cancelAutoClose(reason) {
+    if (!autoCloseTimer) return;
+    clearTimeout(autoCloseTimer);
+    autoCloseTimer = null;
+    log(`已取消自动关闭（${reason}）`);
   }
 
   // ==================== 成绩对账 ====================
@@ -1221,183 +2016,192 @@
 
   const PANEL_NAME = '公务员网络培训助手';
 
-  // 分类定义。badge 在收起时显示摘要，展开后隐藏（按钮自己带状态）。
+  // 分类定义。与「法宣在线助手」逐字对齐：前三个分类名称、顺序完全一致，
+  // 「观看限制」是本脚本唯一的增量（本平台多了播放计时），放在题库之后、日志之前，
+  // 这样两边的「日志与自检」都留在最底部，并排安装时视觉锚点一致。
   const PANEL_GROUPS = [
-    { key: 'exam', name: '答题' },
-    { key: 'play', name: '观看限制' },
-    { key: 'api', name: '接口设置' },
-    { key: 'bank', name: '题库与导入' },
-    { key: 'log', name: '日志与自检' },
+    { key: 'mode', name: '答题模式与节奏' },   // 百度 / AI、节奏、交卷、调试、二源
+    { key: 'api', name: '接口设置' },          // AI 设置 / 测试连接
+    { key: 'bank', name: '题库与本场' },       // 导出 / 导入 / 解析成绩 / 清空本场
+    { key: 'play', name: '观看限制' },         // 本平台独有：解除失焦暂停
+    { key: 'log', name: '日志与自检' },        // 清空 / 复制 / 导出 / 自检
   ];
   const PANEL_GROUP_KEYS = PANEL_GROUPS.map((g) => g.key);
 
   // 与法宣在线同一套设计令牌，改这里两个脚本就该一起改
   const PANEL_CSS = `
-    :host { all: initial; position: fixed; top: 0; left: 0; z-index: 2147483000; }
-    #fx-panel {
-        /* ---- 设计令牌 ---- */
-        --fx-bg: #12161d;
-        --fx-bg-soft: #1a1f28;
-        --fx-surface: #212836;
-        --fx-surface-2: #2a3242;
-        --fx-line: #313a4b;
-        --fx-line-soft: #262e3c;
-        --fx-text: #e8ecf3;
-        --fx-text-dim: #98a4b8;
-        --fx-text-mute: #8794a8;
-        --fx-accent: #5aa9ff;
-        --fx-accent-soft: rgba(90, 169, 255, 0.14);
-        --fx-ok: #46c98a;
-        --fx-warn: #f0b445;
-        --fx-error: #f2666f;
-        --fx-radius: 10px;
-        --fx-radius-sm: 7px;
-        --fx-btn-h: 34px;
+      :host { all: initial; position: fixed; top: 0; left: 0; z-index: 2147483000; }
+      #fx-panel {
+          /* ---- 设计令牌 ---- */
+          --fx-bg: #12161d;
+          --fx-bg-soft: #1a1f28;
+          --fx-surface: #212836;
+          --fx-surface-2: #2a3242;
+          --fx-line: #313a4b;
+          --fx-line-soft: #262e3c;
+          --fx-text: #e8ecf3;
+          --fx-text-dim: #98a4b8;
+          --fx-text-mute: #8794a8;
+          --fx-accent: #5aa9ff;
+          --fx-accent-soft: rgba(90, 169, 255, 0.14);
+          --fx-ok: #46c98a;
+          --fx-warn: #f0b445;
+          --fx-error: #f2666f;
+          --fx-radius: 10px;
+          --fx-radius-sm: 7px;
+          --fx-btn-h: 34px;
 
-        position: fixed; top: 80px; right: 15px;
-        background: var(--fx-bg);
-        color: var(--fx-text);
-        border: 1px solid var(--fx-line);
-        border-radius: 14px; padding: 10px;
-        font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
-        font-size: 13px; line-height: 1.45;
-        width: min(300px, calc(100vw - 24px)); max-height: calc(100vh - 92px);
-        display: flex; flex-direction: column;
-        box-sizing: border-box;
-        box-shadow: 0 18px 48px -12px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
-    }
-    #fx-panel * { box-sizing: border-box; font-family: inherit; font-size: 13px; }
-    #fx-panel ::-webkit-scrollbar { width: 8px; height: 8px; }
-    #fx-panel ::-webkit-scrollbar-thumb { background: #39435a; border-radius: 8px; }
-    #fx-panel ::-webkit-scrollbar-thumb:hover { background: #47536e; }
-    #fx-panel ::-webkit-scrollbar-track { background: transparent; }
+          position: fixed; top: 80px; right: 15px;
+          background: var(--fx-bg);
+          color: var(--fx-text);
+          border: 1px solid var(--fx-line);
+          border-radius: 14px; padding: 10px;
+          font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+          font-size: 13px; line-height: 1.45;
+          width: min(300px, calc(100vw - 24px)); max-height: calc(100vh - 92px);
+          display: flex; flex-direction: column;
+          box-sizing: border-box;
+          box-shadow: 0 18px 48px -12px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+      }
+      #fx-panel * { box-sizing: border-box; font-family: inherit; font-size: 13px; }
+      #fx-panel ::-webkit-scrollbar { width: 8px; height: 8px; }
+      #fx-panel ::-webkit-scrollbar-thumb { background: #39435a; border-radius: 8px; }
+      #fx-panel ::-webkit-scrollbar-thumb:hover { background: #47536e; }
+      #fx-panel ::-webkit-scrollbar-track { background: transparent; }
 
-    /* ---------- 按钮 ---------- */
-    #fx-panel button {
-        background: var(--fx-surface); border: 1px solid var(--fx-line); color: var(--fx-text);
-        padding: 0 8px; border-radius: var(--fx-radius-sm); cursor: pointer;
-        height: var(--fx-btn-h); white-space: nowrap;
-        display: flex; align-items: center; justify-content: center;
-        font-weight: 500; transition: background 0.14s, border-color 0.14s, color 0.14s, transform 0.1s;
-    }
-    #fx-panel button:hover { background: var(--fx-surface-2); border-color: #43506a; }
-    #fx-panel button:active { transform: translateY(1px); }
-    #fx-panel button:focus-visible { outline: 2px solid var(--fx-accent); outline-offset: 1px; }
-    #fx-panel button.active {
-        background: var(--fx-accent-soft); color: #cfe6ff;
-        border-color: rgba(90, 169, 255, 0.55); font-weight: 600;
-    }
-    #fx-panel button[disabled] { opacity: 0.45; cursor: not-allowed; }
-    #fx-panel .row { display: flex; gap: 6px; margin-bottom: 7px; align-items: center; }
-    #fx-panel .row:last-child { margin-bottom: 0; }
-    #fx-panel .row button { flex: 1; min-width: 0; padding: 0 6px; }
-    #fx-panel .row.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
-    #fx-panel .row.grid-2 button { flex: none; }
-    @media (pointer: coarse) { #fx-panel { --fx-btn-h: 40px; } }
-    @media (prefers-reduced-motion: reduce) {
-        #fx-panel *, #fx-panel button { transition: none !important; animation: none !important; }
-        #fx-panel button:active { transform: none; }
-    }
+      /* ---------- 按钮 ---------- */
+      #fx-panel button {
+          background: var(--fx-surface); border: 1px solid var(--fx-line); color: var(--fx-text);
+          padding: 0 8px; border-radius: var(--fx-radius-sm); cursor: pointer;
+          height: var(--fx-btn-h); white-space: nowrap;
+          display: flex; align-items: center; justify-content: center;
+          font-weight: 500; transition: background 0.14s, border-color 0.14s, color 0.14s, transform 0.1s;
+      }
+      #fx-panel button:hover { background: var(--fx-surface-2); border-color: #43506a; }
+      #fx-panel button:active { transform: translateY(1px); }
+      #fx-panel button:focus-visible { outline: 2px solid var(--fx-accent); outline-offset: 1px; }
+      #fx-panel button.active {
+          background: var(--fx-accent-soft); color: #cfe6ff;
+          border-color: rgba(90, 169, 255, 0.55); font-weight: 600;
+      }
+      #fx-panel button[disabled] { opacity: 0.45; cursor: not-allowed; }
+      #fx-panel .row { display: flex; gap: 6px; margin-bottom: 7px; align-items: center; }
+      #fx-panel .row:last-child { margin-bottom: 0; }
+      #fx-panel .row button { flex: 1; min-width: 0; padding: 0 6px; }
+      /* 窄面板（300px）里 4 枚按钮一行放不下：文字会压到边框、挤进相邻按钮，改 2x2 等宽 */
+      #fx-panel .row.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+      #fx-panel .row.grid-2 button { flex: none; }
+      /* 触屏设备把按钮高度抬到 40px：34px 低于可点按的最小目标 */
+      @media (pointer: coarse) { #fx-panel { --fx-btn-h: 40px; } }
+      /* 系统开启「减少动态效果」时不再播放过渡/位移 */
+      @media (prefers-reduced-motion: reduce) {
+          #fx-panel *, #fx-panel button { transition: none !important; animation: none !important; }
+          #fx-panel button:active { transform: none; }
+      }
 
-    /* ---------- 标题栏 ---------- */
-    #fx-panel .panel-title {
-        display: flex; align-items: center; gap: 7px;
-        margin: -2px -2px 9px; padding: 5px 8px 7px;
-        border-bottom: 1px solid var(--fx-line-soft);
-        cursor: move; user-select: none;
-    }
-    #fx-panel .panel-title span { font-size: 13.5px; font-weight: 650; letter-spacing: 0.2px; }
-    #fx-panel .title-dot { flex: none; width: 8px; height: 8px; border-radius: 50%;
-        background: var(--fx-text-mute); transition: background 0.2s, box-shadow 0.2s; }
-    #fx-panel .title-dot.on { background: var(--fx-ok); box-shadow: 0 0 0 3px rgba(70, 201, 138, 0.16); }
-    #fx-panel .title-dot.paused { background: var(--fx-warn); box-shadow: 0 0 0 3px rgba(240, 180, 69, 0.16); }
-    #fx-panel .title-ver { flex: none; margin-left: auto; padding: 1px 6px; border-radius: 999px;
-        background: var(--fx-bg-soft); border: 1px solid var(--fx-line);
-        color: var(--fx-text-mute); font-size: 10.5px; font-weight: 600; letter-spacing: 0.3px; }
-    #fx-panel .topbar { display: grid; grid-template-columns: 1.15fr 1fr 1fr; gap: 6px; margin-bottom: 9px; }
-    #fx-panel .topbar button { flex: none; min-width: 0; }
-    #fx-panel #fx-primary:not(.running) { background: var(--fx-accent-soft); border-color: rgba(90, 169, 255, 0.5); color: #cfe6ff; font-weight: 600; }
-    #fx-panel #fx-primary:hover { background: rgba(90, 169, 255, 0.22); }
-    #fx-panel #fx-primary.running { background: rgba(242, 102, 111, 0.16); border-color: rgba(242, 102, 111, 0.45); color: #ffd0d3; }
+      /* ---------- 标题栏 ---------- */
+      #fx-panel .panel-title {
+          display: flex; align-items: center; gap: 7px;
+          margin: -2px -2px 9px; padding: 5px 8px 7px;
+          border-bottom: 1px solid var(--fx-line-soft);
+          cursor: move; user-select: none;
+      }
+      #fx-panel .panel-title span { font-size: 13.5px; font-weight: 650; letter-spacing: 0.2px; }
+      #fx-panel .title-dot { flex: none; width: 8px; height: 8px; border-radius: 50%;
+          background: var(--fx-text-mute); transition: background 0.2s, box-shadow 0.2s; }
+      #fx-panel .title-dot.on { background: var(--fx-ok); box-shadow: 0 0 0 3px rgba(70, 201, 138, 0.16); }
+      #fx-panel .title-dot.paused { background: var(--fx-warn); box-shadow: 0 0 0 3px rgba(240, 180, 69, 0.16); }
+      #fx-panel .title-ver { flex: none; margin-left: auto; padding: 1px 6px; border-radius: 999px;
+          background: var(--fx-bg-soft); border: 1px solid var(--fx-line);
+          color: var(--fx-text-mute); font-size: 10.5px; font-weight: 600; letter-spacing: 0.3px; }
+      /* 顶栏常驻按钮（开始 / 暂停 / 收起）：等宽三列，主按钮用强调色区分 */
+      #fx-panel .topbar { display: grid; grid-template-columns: 1.15fr 1fr 1fr; gap: 6px; margin-bottom: 9px; }
+      #fx-panel .topbar button { flex: none; min-width: 0; }
+      #fx-panel #fx-stop:not(.active) { background: var(--fx-accent-soft); border-color: rgba(90, 169, 255, 0.5); color: #cfe6ff; font-weight: 600; }
+      #fx-panel #fx-stop:hover { background: rgba(90, 169, 255, 0.22); }
 
-    /* ---------- 内容区 ---------- */
-    #fx-panel .fx-content { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; padding-right: 2px; }
+      /* ---------- 内容区 ---------- */
+      #fx-panel .fx-content { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; padding-right: 2px; }
 
-    /* ---------- 分类折叠 ---------- */
-    #fx-panel .group { flex: none; margin-bottom: 7px; border: 1px solid var(--fx-line-soft);
-        border-radius: var(--fx-radius-sm); overflow: hidden; background: rgba(255, 255, 255, 0.012); }
-    #fx-panel .group-head { display: flex; align-items: center; gap: 7px; padding: 8px 9px;
-        cursor: pointer; user-select: none; transition: background 0.14s; }
-    #fx-panel .group-head:hover { background: rgba(255, 255, 255, 0.045); }
-    #fx-panel .group-head:focus-visible { outline: 2px solid var(--fx-accent); outline-offset: -2px; }
-    #fx-panel .group.open .group-head { border-bottom: 1px solid var(--fx-line-soft); }
-    #fx-panel .group-caret { flex: none; width: 9px; color: var(--fx-text-mute);
-        transition: transform 0.18s ease, color 0.18s; font-size: 10px; }
-    #fx-panel .group.open .group-caret { transform: rotate(90deg); color: var(--fx-accent); }
-    #fx-panel .group-name { flex: 1; font-weight: 600; white-space: nowrap; color: var(--fx-text); }
-    #fx-panel .group-badge { flex: none; max-width: 60%; color: var(--fx-text-dim);
-        font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    #fx-panel .group.open .group-badge { display: none; }
-    #fx-panel .group-body { display: none; padding: 9px 9px 3px; }
-    #fx-panel .group.open .group-body { display: block; }
+      /* ---------- 分类折叠 ---------- */
+      #fx-panel .group { flex: none; margin-bottom: 7px; border: 1px solid var(--fx-line-soft);
+          border-radius: var(--fx-radius-sm); overflow: hidden; background: rgba(255, 255, 255, 0.012); }
+      #fx-panel .group-head { display: flex; align-items: center; gap: 7px; padding: 8px 9px;
+          cursor: pointer; user-select: none; transition: background 0.14s; }
+      #fx-panel .group-head:hover { background: rgba(255, 255, 255, 0.045); }
+      #fx-panel .group-head:focus-visible { outline: 2px solid var(--fx-accent); outline-offset: -2px; }
+      #fx-panel .group.open .group-head { border-bottom: 1px solid var(--fx-line-soft); }
+      #fx-panel .group-caret { flex: none; width: 9px; color: var(--fx-text-mute);
+          transition: transform 0.18s ease, color 0.18s; font-size: 10px; }
+      #fx-panel .group.open .group-caret { transform: rotate(90deg); color: var(--fx-accent); }
+      #fx-panel .group-name { flex: 1; font-weight: 600; white-space: nowrap; color: var(--fx-text); }
+      #fx-panel .group-badge { flex: none; max-width: 60%; color: var(--fx-text-dim);
+          font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #fx-panel .group.open .group-badge { display: none; }   /* 展开后按钮自己带状态，摘要让位 */
+      #fx-panel .group-body { display: none; padding: 9px 9px 3px; }
+      #fx-panel .group.open .group-body { display: block; }
 
-    /* ---------- 进度 / 状态 / 统计 ---------- */
-    #fx-panel .bar { width: 100%; height: 4px; background: var(--fx-bg-soft); border-radius: 999px;
-        margin-top: 9px; overflow: hidden; flex: none; }
-    #fx-panel .fill { height: 100%; border-radius: 999px; width: 0%;
-        background: linear-gradient(90deg, #4a9eff, #6fd3ff); transition: width 0.35s ease; }
-    #fx-panel .status { margin-top: 8px; font-weight: 600; text-align: center; color: var(--fx-text); flex: none; }
-    #fx-panel .stats { margin-top: 5px; text-align: center; color: var(--fx-text-dim);
-        font-size: 12px; line-height: 1.45; flex: none; }
+      /* ---------- 进度 / 状态 / 统计 ---------- */
+      #fx-panel .bar { width: 100%; height: 4px; background: var(--fx-bg-soft); border-radius: 999px;
+          margin-top: 9px; overflow: hidden; flex: none; }
+      #fx-panel .fill { height: 100%; border-radius: 999px; width: 0%;
+          background: linear-gradient(90deg, #4a9eff, #6fd3ff); transition: width 0.35s ease; }
+      #fx-panel .status { margin-top: 8px; font-weight: 600; text-align: center; color: var(--fx-text); }
+      #fx-panel .stats { margin-top: 5px; text-align: center; color: var(--fx-text-dim);
+          font-size: 12px; line-height: 1.45; }
 
-    /* ---------- 提示条 ---------- */
-    #fx-panel .notice { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 8px;
-        background: rgba(240, 180, 69, 0.1); border: 1px solid rgba(240, 180, 69, 0.28);
-        border-radius: var(--fx-radius-sm); padding: 8px 9px; cursor: pointer; }
-    #fx-panel .notice-info { background: var(--fx-accent-soft); border-color: rgba(90, 169, 255, 0.3); }
-    #fx-panel .notice-warn { background: rgba(240, 180, 69, 0.1); border-color: rgba(240, 180, 69, 0.28); }
-    #fx-panel .notice-error { background: rgba(242, 102, 111, 0.1); border-color: rgba(242, 102, 111, 0.3); }
-    #fx-panel .notice span { flex: 1; line-height: 1.4; font-size: 12.5px; }
+      /* ---------- 提示条 ---------- */
+      #fx-panel .notice { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 8px;
+          background: rgba(240, 180, 69, 0.1); border: 1px solid rgba(240, 180, 69, 0.28);
+          border-radius: var(--fx-radius-sm); padding: 8px 9px; cursor: pointer; }
+      #fx-panel .notice-info { background: var(--fx-accent-soft); border-color: rgba(90, 169, 255, 0.3); }
+      #fx-panel .notice-warn { background: rgba(240, 180, 69, 0.1); border-color: rgba(240, 180, 69, 0.28); }
+      #fx-panel .notice-error { background: rgba(242, 102, 111, 0.1); border-color: rgba(242, 102, 111, 0.3); }
+      #fx-panel .notice span { flex: 1; line-height: 1.4; font-size: 12.5px; }
 
-    /* ---------- 设置表单 ---------- */
-    #fx-panel .settings { margin-bottom: 3px; }
-    #fx-panel .fld { display: block; margin-bottom: 7px; }
-    #fx-panel .fld i { display: block; font-style: normal; margin-bottom: 4px;
-        color: var(--fx-text-dim); font-size: 12px; }
-    #fx-panel input { width: 100%; height: 32px; background: var(--fx-bg-soft); color: var(--fx-text);
-        border: 1px solid var(--fx-line); border-radius: var(--fx-radius-sm); padding: 0 9px; font-size: 12.5px; }
-    #fx-panel input::placeholder { color: var(--fx-text-mute); }
-    #fx-panel input:focus { outline: none; border-color: var(--fx-accent); box-shadow: 0 0 0 3px var(--fx-accent-soft); }
-    #fx-panel .form-err { margin-bottom: 7px; color: #ffc4c9; font-size: 12px;
-        padding: 5px 8px; border-radius: 6px; background: rgba(242, 102, 111, 0.12); }
+      /* ---------- 设置表单 ---------- */
+      #fx-panel .settings { margin-bottom: 3px; }
+      #fx-panel .fld { display: block; margin-bottom: 7px; }
+      #fx-panel .fld i { display: block; font-style: normal; margin-bottom: 4px;
+          color: var(--fx-text-dim); font-size: 12px; }
+      #fx-panel input { width: 100%; height: 32px; background: var(--fx-bg-soft); color: var(--fx-text);
+          border: 1px solid var(--fx-line); border-radius: var(--fx-radius-sm); padding: 0 9px; font-size: 12.5px; }
+      #fx-panel input::placeholder { color: var(--fx-text-mute); }
+      #fx-panel input:focus { outline: none; border-color: var(--fx-accent); box-shadow: 0 0 0 3px var(--fx-accent-soft); }
+      #fx-panel .form-err { margin-bottom: 7px; color: #ffc4c9; font-size: 12px;
+          padding: 5px 8px; border-radius: 6px; background: rgba(242, 102, 111, 0.12); }
 
-    /* ---------- 日志 ---------- */
-    #fx-panel .log-box { margin-top: 9px; min-height: 88px;
-        max-height: min(180px, 26vh); overflow-y: auto; flex: 0 1 auto;
-        background: #0d1117; border: 1px solid var(--fx-line-soft); padding: 7px 6px;
-        border-radius: var(--fx-radius-sm); word-break: break-all; font-size: 12px;
-        font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
-    #fx-panel .log-line { margin-bottom: 2px; padding: 1px 6px; border-radius: 4px;
-        border-left: 3px solid transparent; color: #c3cbd9; }
-    #fx-panel .log-info  { border-left-color: #3d4657; }
-    #fx-panel .log-ok    { border-left-color: var(--fx-ok); color: #c9f0dd; }
-    #fx-panel .log-warn  { border-left-color: var(--fx-warn); color: #ffe6b8; }
-    #fx-panel .log-error { border-left-color: var(--fx-error); color: #ffd0d3; }
-    #fx-panel .log-debug { border-left-color: var(--fx-accent); color: #b9d8ff; opacity: 0.9; }
+      /* ---------- 日志 ---------- */
+      /* max-height 是上限、min-height 是下限：四个分组全部展开时面板会顶到
+         「calc(100vh - 24px)」，这里不加下限的话日志区会被挤成十几像素高。
+         有了下限就由 .fx-content 自己出滚动条，日志始终留着可读的几行。 */
+      #fx-panel .log-box { margin-top: 9px; min-height: 120px;
+          max-height: min(210px, 30vh); overflow-y: auto;
+          background: #0d1117; border: 1px solid var(--fx-line-soft); padding: 7px 6px;
+          border-radius: var(--fx-radius-sm); word-break: break-all; font-size: 12px;
+          font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+      #fx-panel .log-line { margin-bottom: 2px; padding: 1px 6px; border-radius: 4px;
+          border-left: 3px solid transparent; color: #c3cbd9; }
+      #fx-panel .log-info  { border-left-color: #3d4657; }
+      #fx-panel .log-ok    { border-left-color: var(--fx-ok); color: #c9f0dd; }
+      #fx-panel .log-warn  { border-left-color: var(--fx-warn); color: #ffe6b8; }
+      #fx-panel .log-error { border-left-color: var(--fx-error); color: #ffd0d3; }
+      #fx-panel .log-debug { border-left-color: var(--fx-accent); color: #b9d8ff; opacity: 0.9; }
 
-    /* ---------- 收起 ---------- */
-    #fx-panel.collapsed { width: min(132px, calc(100vw - 24px)); }
-    #fx-panel .collapse-title { display: none; }
-    #fx-panel.collapsed .fx-content, #fx-panel.collapsed .panel-title { display: none; }
-    #fx-panel.collapsed .collapse-title { display: flex; align-items: center; justify-content: center; gap: 6px;
-        font-weight: 600; margin-bottom: 8px; cursor: move; user-select: none; }
-    #fx-panel.collapsed .topbar { grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 0; }
-    #fx-panel.collapsed #fx-submit { display: none; }
+      /* ---------- 收起：只留一条窄条，点「展开」还原 ---------- */
+      #fx-panel.collapsed { width: min(132px, calc(100vw - 24px)); }
+      #fx-panel .collapse-title { display: none; }   /* 基础态隐藏：窄条标题只在收起时出现，否则和 .panel-title 重复 */
+      #fx-panel.collapsed .fx-content, #fx-panel.collapsed .panel-title { display: none; }
+      #fx-panel.collapsed .collapse-title { display: flex; align-items: center; justify-content: center; gap: 6px;
+          font-weight: 600; margin-bottom: 8px; cursor: move; user-select: none; }
+      #fx-panel.collapsed .topbar { grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 0; }
+      #fx-panel.collapsed #fx-stop { display: inline-flex; }
+      #fx-panel.collapsed #fx-pause { display: none; }
 
-    @media (max-width: 380px) {
-        #fx-panel { width: calc(100vw - 16px); max-height: calc(100vh - 16px); padding: 8px; }
-        #fx-panel .log-box { max-height: 24vh; }
-    }
+      @media (max-width: 380px) {
+          #fx-panel { width: calc(100vw - 16px); max-height: calc(100vh - 16px); padding: 8px; }
+          #fx-panel .log-box { max-height: 24vh; }
+      }
   `;
 
   /** 折叠状态归一化：只认已知分类，坏数据一律当收起 */
@@ -1408,21 +2212,24 @@
     return out;
   }
 
-  /** 分类标题右侧摘要（收起时可见，展开后隐藏） */
+  /**
+   * 分类标题右侧摘要（纯函数，自检可断言）。
+   * 与「法宣在线助手」同一套文案：收起时也能一眼看到模式与节奏、接口是否配好、
+   * 题库题数与已答数、日志行数，不用为了确认一件事把分类一个个点开。
+   */
   function groupBadge(key, ctx) {
     const c = ctx || {};
-    if (key === 'exam') {
-      const bits = [];
-      if (c.questions) bits.push(`${c.answered || 0}/${c.questions} 题`);
-      else bits.push('无试卷');
+    if (key === 'mode') {
+      const bits = [c.mode === 'ai' ? 'AI智能' : '百度搜索', SPEED_NAME[c.speed] || '标准'];
       if (c.autoSubmit) bits.push('自动交卷');
+      if (c.debug) bits.push('调试');
       return bits.join(' · ');
     }
+    if (key === 'api') return c.keySet ? '已配置' : '未配置';
+    if (key === 'bank') return `题库 ${c.bank || 0} 题${c.answered ? ` · 已答 ${c.answered}` : ''}`;
     // 只有当前页面才给状态，否则留空——试卷页上显示「未接管（播放）」
     // 会让人以为功能坏了，其实只是这页没有播放器。
     if (key === 'play') return c.applicable ? (c.unlocked ? '已接管' : '未接管') : '';
-    if (key === 'api') return c.enabled ? (c.model || '已配置') : '未启用';
-    if (key === 'bank') return `题库 ${c.bank || 0} 条`;
     if (key === 'log') return `日志 ${c.lines || 0} 行`;
     return '';
   }
@@ -1460,6 +2267,9 @@
 
     const el = document.createElement('div');
     el.id = 'fx-panel';
+    el.dataset.state = 'normal';
+    // 结构与按钮文案逐字对齐「法宣在线助手」：标题栏 → 顶栏三列 → 四个共用分类
+    // → 本平台独有的「观看限制」→ 状态 / 两行统计 / 日志框。
     el.innerHTML = `
       <div class="collapse-title" id="fx-collapse-title">${PANEL_NAME}</div>
       <div class="panel-title" id="fx-drag-title">
@@ -1468,20 +2278,58 @@
         <span class="title-ver">v${VERSION}</span>
       </div>
       <div class="topbar">
-        <button id="fx-primary">开始</button>
-        <button id="fx-submit">交卷</button>
+        <button id="fx-stop">开始</button>
+        <button id="fx-pause">暂停</button>
         <button id="fx-toggle" title="收起 / 展开面板（Alt+H）">收起</button>
       </div>
       <div class="fx-content" id="fx-content">
-        <div class="notice" id="fx-notice" role="status" aria-live="polite" tabindex="0" style="display:none;"><span id="fx-notice-text"></span></div>
+        <div class="notice" id="fx-notice" role="status" aria-live="polite" tabindex="0" aria-label="提示，按回车或空格关闭" style="display:none;"><span id="fx-notice-text"></span></div>
 
-        ${groupHtml('exam', `
+        ${groupHtml('mode', `
+          <div class="row">
+            <button class="mode-btn ${CONFIG.answerMode === 'ai' ? 'active' : ''}" data-mode="ai" aria-pressed="${CONFIG.answerMode === 'ai' ? 'true' : 'false'}">AI智能</button>
+            <button class="mode-btn ${CONFIG.answerMode === 'baidu' ? 'active' : ''}" data-mode="baidu" aria-pressed="${CONFIG.answerMode === 'baidu' ? 'true' : 'false'}">百度搜索</button>
+          </div>
           <div class="row grid-2">
-            ${toggleBtn('fx-autoanswer', '自动作答', CONFIG.autoAnswer)}
-            ${toggleBtn('fx-autosubmit', '自动交卷', CONFIG.autoSubmit)}
+            <button id="fx-speed">节奏：${SPEED_NAME[CONFIG.speed] || '标准'}</button>
+            <button id="fx-submit" class="${CONFIG.autoSubmit ? 'active' : ''}" aria-pressed="${CONFIG.autoSubmit ? 'true' : 'false'}">交卷：${CONFIG.autoSubmit ? '自动' : '手动'}</button>
+            <button id="fx-debug" class="${CONFIG.debug ? 'active' : ''}" aria-pressed="${CONFIG.debug ? 'true' : 'false'}">调试：${CONFIG.debug ? '开' : '关'}</button>
+            <button id="fx-crosscheck" class="${CONFIG.forceCrossCheck ? 'active' : ''}" aria-pressed="${CONFIG.forceCrossCheck ? 'true' : 'false'}">二源：${CONFIG.forceCrossCheck ? '强制' : '自动'}</button>
+          </div>
+        `)}
+
+        ${groupHtml('api', `
+          <div class="row">
+            <button id="fx-settings-btn">AI 设置</button>
+            <button id="fx-test">测试连接</button>
+          </div>
+          <div class="settings" id="fx-settings" style="display:none;">
+            <label class="fld"><i>接口地址</i><input id="fx-f-url" type="text" placeholder="https://api.deepseek.com/v1/chat/completions"></label>
+            <label class="fld"><i>API Key</i><input id="fx-f-key" type="password" placeholder="sk-..."></label>
+            <label class="fld"><i>模型</i><input id="fx-f-model" type="text" placeholder="deepseek-chat"></label>
+            <div class="form-err" id="fx-f-err" style="display:none;"></div>
+            <div class="row">
+              <button id="fx-f-save">保存</button>
+              <button id="fx-f-cancel">取消</button>
+            </div>
+          </div>
+        `)}
+
+        ${groupHtml('bank', `
+          <div class="row grid-2">
+            <button id="fx-export">导出答案库</button>
+            <button id="fx-import">导入答案库</button>
+            <button id="fx-reparse">解析成绩</button>
+            <button id="fx-disputes-export">导出争议题</button>
+          </div>
+          <div class="row grid-2">
+            <button id="fx-autoclose" aria-pressed="${CONFIG.autoCloseSec ? 'true' : 'false'}">关闭页：${CONFIG.autoCloseSec ? CONFIG.autoCloseSec + 's' : '不关'}</button>
+            <button id="fx-clear-session">清空本场</button>
+            <button id="fx-reseed">补全内置</button>
+            <button id="fx-clear-bank">清空题库</button>
           </div>
           <div class="row">
-            <button id="fx-checkupdate">检查更新</button>
+            <button id="fx-manual-reconcile">手动对账</button>
           </div>
         `)}
 
@@ -1493,48 +2341,23 @@
           </div>
         `)}
 
-        ${groupHtml('api', `
-          <div class="row">
-            <button id="fx-settings-btn">AI 设置</button>
-            ${toggleBtn('fx-enableai', 'AI 兜底', CONFIG.enableAI)}
-          </div>
-          <div class="settings" id="fx-settings" style="display:none;">
-            <label class="fld"><i>接口地址</i><input id="fx-f-url" type="text" placeholder="https://api.deepseek.com/v1/chat/completions"></label>
-            <label class="fld"><i>模型</i><input id="fx-f-model" type="text" placeholder="deepseek-chat"></label>
-            <label class="fld"><i>API Key</i><input id="fx-f-key" type="password" placeholder="sk-..."></label>
-            <div class="row">
-              <button id="fx-f-save">保存</button>
-              <button id="fx-f-cancel">取消</button>
-            </div>
-          </div>
-        `)}
-
-        ${groupHtml('bank', `
-          <div class="row grid-2">
-            <button id="fx-export">导出 JSON</button>
-            <button id="fx-export-csv">导出 CSV</button>
-            <button id="fx-import">导入题库</button>
-            <button id="fx-reseed">补全内置</button>
-          </div>
-          <div class="row">
-            <button id="fx-clear-bank">清空题库</button>
-          </div>
-        `)}
-
         ${groupHtml('log', `
           <div class="row">
-            <button id="fx-log-clear">清空</button>
-            <button id="fx-log-copy">复制</button>
-            <button id="fx-diag">诊断包</button>
+            <button id="fx-log-clear">清空日志</button>
+            <button id="fx-log-copy">复制日志</button>
+            <button id="fx-log-export">导出日志</button>
           </div>
           <div class="row">
             <button id="fx-selftest">自检</button>
+            <button id="fx-checkupdate">检查更新</button>
+            <button id="fx-diag">导出诊断包</button>
           </div>
         `)}
 
         <div class="bar"><div class="fill" id="fx-fill"></div></div>
         <div class="status" id="fx-status">就绪</div>
         <div class="stats" id="fx-stats"></div>
+        <div class="stats" id="fx-stats2"></div>
         <div class="log-box" id="fx-log"></div>
       </div>
     `;
@@ -1571,15 +2394,10 @@
           st.textContent = s;
           st.title = s;
         }
-        // 状态文案里带「正在作答」时，主按钮同步成「停止」，反之回「开始」。
-        // 光靠 examRunning 不够：状态可能被外部驱动（测试、onload 自动开始），
+        // 状态文案带「作答中」时主按钮同步成「停止」，与法宣的 runStatusLabel 同源。
+        // 光靠 examRunning 不够：状态可能被外部驱动（测试、页面加载后自动开始），
         // 那时按钮不跟着变会让人以为点不动。
-        const p = $('fx-primary');
-        if (p) {
-          const running = /正在作答/.test(s);
-          p.textContent = running ? '停止' : '开始';
-          p.classList.toggle('running', running);
-        }
+        syncRunBtns();
       },
       // 圆点三态：idle 绿 / busy 黄 / err 红。与法宣的 on / paused 语义对齐
       setTone(tone) {
@@ -1594,21 +2412,15 @@
         const pct = total ? Math.round((done / total) * 100) : 0;
         fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
       },
-      refresh() { syncBadges(); syncToggles(); syncTopbar(); },
+      refresh() { syncBadges(); syncToggles(); syncRunBtns(); updateStats(); },
       clearLog() {
         const box = $('fx-log');
         if (box) box.innerHTML = '';
+        logLines.length = 0;
         syncBadges(['log']);
       },
-      logText() {
-        const box = $('fx-log');
-        return box ? Array.from(box.children).map((d) => d.textContent).join('\n') : '';
-      },
-      toggleCollapse() { el.classList.toggle('collapsed'); syncTopbar(); },
-      setSite(label) {
-        const s = $('fx-stats');
-        if (s) s.dataset.site = label;
-      },
+      logText() { return logLines.join('\n'); },
+      toggleCollapse() { togglePanelState(); },
       showNotice(text, kind = 'info') {
         const n = $('fx-notice');
         const t = $('fx-notice-text');
@@ -1625,31 +2437,23 @@
 
     // ---------------------------------------------------------------- 摘要
     function groupCtx(key) {
-      if (key === 'exam') {
-        let parsed = [];
-        try { parsed = parseExam(); } catch (e) { parsed = []; }
-        // 按「整题是否已作答」计，不是数勾选框：多选一题会勾多项，
-        // 直接数 checked 会把 5 题显示成 10/5。
-        const answered = parsed.filter((q) =>
-          q.options.some((o) => o.input && o.input.checked)).length;
+      if (key === 'mode') {
         return {
-          questions: parsed.length,
-          answered,
+          mode: CONFIG.answerMode,
+          speed: CONFIG.speed,
           autoSubmit: CONFIG.autoSubmit,
+          debug: CONFIG.debug,
         };
       }
+      if (key === 'api') return { keySet: !!(CONFIG.aiUrl && CONFIG.aiKey) };
+      if (key === 'bank') return { bank: bankCount(), answered: history.length };
       if (key === 'play') {
         return {
           applicable: isPlayerPage(),
           unlocked: playerGuard.installed && CONFIG.unlockBlur,
         };
       }
-      if (key === 'api') return { enabled: CONFIG.enableAI && !!CONFIG.aiUrl, model: CONFIG.aiModel };
-      if (key === 'bank') return { bank: bankCount() };
-      if (key === 'log') {
-        const box = $('fx-log');
-        return { lines: box ? box.childElementCount : 0 };
-      }
+      if (key === 'log') return { lines: logLines.length };
       return {};
     }
 
@@ -1661,13 +2465,41 @@
         const txt = groupBadge(g.key, groupCtx(g.key));
         if (b.textContent !== txt) b.textContent = txt;
       });
-      // 底部统计
-      const st = $('fx-stats');
-      if (st) {
-        const parts = [`题库 ${bankCount()} 条`];
-        if (ACTIVE_SITE && ACTIVE_SITE.label) parts.push(ACTIVE_SITE.label);
-        st.textContent = parts.join(' · ');
+    }
+
+    /**
+     * 底部两行统计，文案与法宣一致。
+     * 第一行：题库规模 + 手改条数 + 存储占用（题库 / 墓碑）。本脚本没有错题本，
+     * 所以括号里比法宣少一项「错题」——这是唯一一处刻意的文案差异，写在 README 里。
+     * 第二行：当前模式、运行状态、已答数、剩余时间、调试标记。
+     */
+    function updateStats() {
+      syncBadges();
+      const el = $('fx-stats');
+      const el2 = $('fx-stats2');
+      if (!el) return;
+      const bankAll = bank();
+      const keys = Object.keys(bankAll);
+      const n = keys.length;
+      let userN = 0;
+      for (const k of keys) {
+        const e = bankAll[k];
+        if (e && e.src && e.src !== 'seed') userN++;   // 交卷验证 / 手改 / 导入都算「用户答案」
       }
+      const bits = [];
+      if (userN) bits.push(`手改 ${userN}`);
+      let bytes = 0;
+      try { bytes = JSON.stringify(bankAll).length; } catch (e) { bytes = 0; }
+      const kb = (bytes / 1024).toFixed(bytes >= 102400 ? 0 : 1);
+      // 本脚本没有独立的错题本与墓碑表（清空用单个时间戳实现），
+      // 所以括号里比法宣少两项——这是唯一一处刻意与法宣不同的文案，README 有说明。
+      el.textContent = `📊 题库 ${n} 题${bits.length ? `（${bits.join(' · ')}）` : ''}`
+        + ` · 💾 ${kb} KB（题库 ${n}）`;
+      if (!el2) return;
+      const mode = CONFIG.answerMode === 'ai' ? 'AI智能' : '百度搜索';
+      const run = examRunning ? (pausedFlag ? '⏸️ 已暂停' : '▶️ 进行中') : '⏹️ 已停止';
+      const dbgOn = CONFIG.debug ? ' · 🔍调试' : '';
+      el2.textContent = `🎛 模式：${mode} · ${run} · 已答 ${history.length}${totalQ ? '/' + totalQ : ''}${dbgOn}`;
     }
 
     // ---------------------------------------------------------------- 折叠
@@ -1709,201 +2541,430 @@
     });
     applyGroupState();
 
-    // ---------------------------------------------------------------- 开关
-    const TOGGLE_MAP = [
-      ['fx-autoanswer', 'autoAnswer'],
-      ['fx-autosubmit', 'autoSubmit'],
-      ['fx-unlock', 'unlockBlur'],
-      ['fx-keep', 'keepPlaying'],
-      ['fx-mute', 'muteForAutoplay'],
-      ['fx-enableai', 'enableAI'],
-    ];
-    const TOGGLE_LABEL = {
-      autoAnswer: '自动作答', autoSubmit: '自动交卷', unlockBlur: '解除失焦暂停',
-      keepPlaying: '意外暂停续播', muteForAutoplay: '静音自动播放', enableAI: 'AI 兜底',
+    // ---------------------------------------------------------------- 通用
+    const on = (id, fn) => {
+      const b = $(id);
+      if (b) b.addEventListener('click', fn);
     };
 
-    function syncToggles() {
-      TOGGLE_MAP.forEach(([id, key]) => {
-        const b = $(id);
-        if (!b) return;
-        b.classList.toggle('active', !!CONFIG[key]);
-        b.setAttribute('aria-pressed', CONFIG[key] ? 'true' : 'false');
+    /** 把人工判定结果按题号写回题库：只写「对」的题，判错的不入库 */
+    function applyManualVerdicts(verdicts) {
+      let ok = 0;
+      batchWrite(() => {
+        history.forEach((h, i) => {
+          if (verdicts[i + 1] !== true) return;
+          if (!h.stem || !h.picked || !h.picked.length) return;
+          saveEntry(h.stem, h.type, h.picked, h.letters, { src: 'manual', verified: true });
+          ok++;
+        });
       });
-      // 主按钮文案随运行态变
-      const p = $('fx-primary');
-      if (p) {
-        p.textContent = examRunning ? '停止' : '开始';
-        p.classList.toggle('running', examRunning);
+      log(`手动对账完成：确认 ${ok} 题写回题库（判错的不入库）`, ok ? 'ok' : 'warn');
+      api.refresh();
+    }
+
+    // ---------------------------------------------------------------- 顶栏
+    /** 开始 / 停止：停下后再点「开始」会从当前题接着答，已填的选项不重填 */
+    function syncRunBtns() {
+      const lb = runBtnLabels(examRunning, pausedFlag);
+      const stop = $('fx-stop');
+      if (stop) {
+        stop.textContent = lb.stop;
+        stop.classList.toggle('active', examRunning);
       }
-      const en = $('fx-enableai');
-      if (en) en.textContent = `AI 兜底：${CONFIG.enableAI ? '开' : '关'}`;
+      const pause = $('fx-pause');
+      if (pause) {
+        pause.textContent = lb.pause;
+        pause.disabled = lb.pauseDisabled;
+        pause.classList.toggle('active', pausedFlag);
+      }
+      // 收起态只留「开始/停止」，暂停按法宣的做法隐藏
+      const dot = $('fx-run-dot');
+      if (dot) {
+        dot.classList.toggle('on', !examRunning);
+        dot.classList.toggle('paused', examRunning && pausedFlag);
+      }
+    }
+
+    function syncToggles() {
+      const unlock = $('fx-unlock');
+      if (unlock) {
+        unlock.textContent = `解除失焦暂停：${CONFIG.unlockBlur ? '开' : '关'}`;
+        unlock.classList.toggle('active', !!CONFIG.unlockBlur);
+        unlock.setAttribute('aria-pressed', String(!!CONFIG.unlockBlur));
+      }
+      const keep = $('fx-keep');
+      if (keep) {
+        keep.textContent = `意外暂停续播：${CONFIG.keepPlaying ? '开' : '关'}`;
+        keep.classList.toggle('active', !!CONFIG.keepPlaying);
+        keep.setAttribute('aria-pressed', String(!!CONFIG.keepPlaying));
+      }
+      const mute = $('fx-mute');
+      if (mute) {
+        mute.textContent = `静音自动播放：${CONFIG.muteForAutoplay ? '开' : '关'}`;
+        mute.classList.toggle('active', !!CONFIG.muteForAutoplay);
+        mute.setAttribute('aria-pressed', String(!!CONFIG.muteForAutoplay));
+      }
+      const speed = $('fx-speed');
+      if (speed) speed.textContent = `节奏：${SPEED_NAME[CONFIG.speed] || '标准'}`;
+      const submit = $('fx-submit');
+      if (submit) {
+        submit.textContent = `交卷：${CONFIG.autoSubmit ? '自动' : '手动'}`;
+        submit.classList.toggle('active', !!CONFIG.autoSubmit);
+        submit.setAttribute('aria-pressed', String(!!CONFIG.autoSubmit));
+      }
+      const debug = $('fx-debug');
+      if (debug) {
+        debug.textContent = `调试：${CONFIG.debug ? '开' : '关'}`;
+        debug.classList.toggle('active', !!CONFIG.debug);
+        debug.setAttribute('aria-pressed', String(!!CONFIG.debug));
+      }
+      const cross = $('fx-crosscheck');
+      if (cross) {
+        cross.textContent = `二源：${CONFIG.forceCrossCheck ? '强制' : '自动'}`;
+        cross.classList.toggle('active', !!CONFIG.forceCrossCheck);
+        cross.setAttribute('aria-pressed', String(!!CONFIG.forceCrossCheck));
+      }
+      const autoClose = $('fx-autoclose');
+      if (autoClose) {
+        autoClose.textContent = `关闭页：${CONFIG.autoCloseSec ? CONFIG.autoCloseSec + 's' : '不关'}`;
+        autoClose.classList.toggle('active', !!CONFIG.autoCloseSec);
+        autoClose.setAttribute('aria-pressed', String(!!CONFIG.autoCloseSec));
+      }
+      // 模式互斥按钮
+      uiRoot.querySelectorAll('.mode-btn').forEach((b) => {
+        const on = b.dataset.mode === CONFIG.answerMode;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-pressed', String(on));
+      });
     }
 
     function syncTopbar() {
       const t = $('fx-toggle');
       if (t) t.textContent = el.classList.contains('collapsed') ? '展开' : '收起';
+      if (el.classList.contains('collapsed') && !$('fx-collapse-title').textContent) {
+        $('fx-collapse-title').textContent = PANEL_NAME;
+      }
     }
 
-    TOGGLE_MAP.forEach(([id, key]) => {
-      const b = $(id);
-      if (!b) return;
-      b.addEventListener('click', () => {
-        CONFIG[key] = !CONFIG[key];
-        store.set('cfg_' + key, CONFIG[key]);
-        syncToggles();
-        syncBadges([key === 'enableAI' ? 'api' : (key === 'autoAnswer' || key === 'autoSubmit' ? 'exam' : 'play')]);
-        if ((key === 'unlockBlur' || key === 'keepPlaying') && CONFIG[key]) playerGuard.install();
-        if (key === 'unlockBlur' && !CONFIG[key] && playerGuard.installed) {
-          log('已停止拦截失焦；如需完全恢复平台原有的暂停行为，请刷新播放页', 'warn');
-        }
-        log(`${TOGGLE_LABEL[key]}已${CONFIG[key] ? '开启' : '关闭'}`);
-      });
+    /** 收起 / 展开：完整面板 ⇄ 窄条，一个按钮来回 */
+    function togglePanelState() {
+      el.classList.toggle('collapsed');
+      el.dataset.state = el.classList.contains('collapsed') ? 'collapsed' : 'normal';
+      syncTopbar();
+      store.set('panelState', el.dataset.state);
+    }
+
+    // 开始 / 停止
+    on('fx-stop', async () => {
+      if (examRunning) {
+        examAbort = true;
+        pausedFlag = false;
+        log(`⏹️ 已停止（已答 ${history.length} 题）· 点「开始」可从当前题继续`, 'warn');
+        api.setState('已停止');
+        syncRunBtns();
+        return;
+      }
+      if (!isExamPage()) {
+        log('当前页面不是试卷页，交卷后再点「开始」也无效', 'warn');
+        api.setState('未检测到题目');
+        return;
+      }
+      log('▶️ 开始答题');
+      await runExam();
     });
 
-    // ---------------------------------------------------------------- 主按钮
-    const primary = $('fx-primary');
-    if (primary) {
-      primary.addEventListener('click', async () => {
-        if (examRunning) {
-          examAbort = true;
-          log('已请求停止作答');
-          return;
-        }
-        if (!isExamPage()) {
-          log('当前页面不是试卷页', 'warn');
-          return;
-        }
-        await runExam();
-        api.refresh();
-      });
-    }
-
-    // 交卷
-    const submitBtn = $('fx-submit');
-    if (submitBtn) {
-      submitBtn.addEventListener('click', async () => {
-        if (!confirm('确定交卷？交卷后无法修改本场答案。')) return;
-        api.setState('正在交卷…');
-        const r = await submitExam();
-        log(`交卷结果：${r.msg}`, r.ok ? 'ok' : 'error');
-        if (r.ok) {
-          api.setState('已通过');
-          api.setTone('idle');
-          reconcileAfterPass();
-        } else {
-          api.setState('未通过（' + r.msg + '）');
-          api.setTone('err');
-        }
-        api.refresh();
-      });
-    }
+    // 暂停 / 继续
+    on('fx-pause', () => {
+      if (!examRunning) { log('当前没有在答题，无需暂停'); return; }
+      pausedFlag = !pausedFlag;
+      log(pausedFlag ? '⏸️ 已暂停：当前题填完后停在原处，点「继续」接着答' : '▶️ 已继续');
+      api.setState(pausedFlag ? '⏸️ 已暂停' : '答题中');
+      syncRunBtns();
+      updateStats();
+    });
 
     // 收起
-    const toggleBtnEl = $('fx-toggle');
-    if (toggleBtnEl) toggleBtnEl.addEventListener('click', () => api.toggleCollapse());
+    on('fx-toggle', () => togglePanelState());
 
-    // 提示条可点击关闭
+    // 提示条：点一下关掉；键盘 Enter / 空格也能关
     const notice = $('fx-notice');
     if (notice) {
       notice.addEventListener('click', () => api.hideNotice());
       notice.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
+        if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
           e.preventDefault();
           api.hideNotice();
         }
       });
     }
 
-    // ---------------------------------------------------------------- 检查更新
-    const checkBtn = $('fx-checkupdate');
-    if (checkBtn) {
-      checkBtn.addEventListener('click', async () => {
-        checkBtn.disabled = true;
-        api.setState('正在检查更新…');
-        const r = await checkUpdate();
-        checkBtn.disabled = false;
-        // 有一个源没查通时说明另个源的结果，避免用户以为「已是最新」是确定的
-        const via = r.error ? ''
-          : `（来源 ${r.source}${r.failed && r.failed.length ? `，${r.failed.join('、')} 不可达` : ''}）`;
-        if (r.error) {
-          log('检查更新失败：' + r.error, 'warn');
-          api.setState('检查更新失败');
-        } else if (r.newer) {
-          log(`发现新版本 ${r.remote}（当前 ${VERSION}）${via}，点提示条前往下载`, 'ok');
-          api.setState(`有新版本 ${r.remote}`);
-          api.showNotice(`有新版本 ${r.remote}，点击此处打开下载页`, 'info');
-          const n = $('fx-notice');
-          if (n) {
-            n.onclick = () => window.open(
-              'https://github.com/Gnayiel/civil-servant-training-assistant/releases/latest', '_blank');
-          }
-        } else {
-          log(`已是最新版本（${VERSION}）${via}`, 'ok');
-          api.setState('已是最新');
-        }
+    // ---------------------------------------------------------------- 模式与节奏
+    // 两个模式互斥：百度搜索（默认，先百度最后 AI）/ AI智能（先 AI 再百度兜底）
+    uiRoot.querySelectorAll('.mode-btn').forEach((b) => {
+      b.addEventListener('click', () => {
+        CONFIG.answerMode = b.dataset.mode;
+        store.set('cfg_answerMode', CONFIG.answerMode);
+        syncToggles();
+        syncBadges(['mode']);
+        updateStats();
+        log(`已切到「${b.dataset.mode === 'ai' ? 'AI智能' : '百度搜索'}」模式`);
       });
-    }
+    });
+
+    on('fx-speed', () => {
+      const order = ['slow', 'normal', 'fast'];
+      CONFIG.speed = order[(order.indexOf(CONFIG.speed) + 1) % order.length];
+      store.set('cfg_speed', CONFIG.speed);
+      syncToggles();
+      syncBadges(['mode']);
+      log(`节奏已切换为「${SPEED_NAME[CONFIG.speed]}」（题间 ${SPEED_DELAY[CONFIG.speed]} ms）`);
+    });
+
+    on('fx-submit', () => {
+      CONFIG.autoSubmit = !CONFIG.autoSubmit;
+      store.set('cfg_autoSubmit', CONFIG.autoSubmit);
+      syncToggles();
+      syncBadges(['mode']);
+      log(CONFIG.autoSubmit
+        ? '⚠️ 已开启自动交卷：答完最后一题会自动点「交卷」并确认'
+        : '已关闭自动交卷：答完只提示，由你自己点交卷');
+      if (CONFIG.autoSubmit) {
+        api.showNotice('已开启自动交卷，答完会自动提交，请谨慎', 'warn');
+      } else {
+        api.hideNotice();
+      }
+    });
+
+    on('fx-debug', () => {
+      CONFIG.debug = !CONFIG.debug;
+      store.set('cfg_debug', CONFIG.debug);
+      syncToggles();
+      syncBadges(['mode']);
+      updateStats();
+      log(CONFIG.debug ? '🔍 调试模式已打开，会输出通道明细' : '已关闭调试模式');
+    });
+
+    on('fx-crosscheck', () => {
+      CONFIG.forceCrossCheck = !CONFIG.forceCrossCheck;
+      store.set('cfg_forceCrossCheck', CONFIG.forceCrossCheck);
+      syncToggles();
+      log(CONFIG.forceCrossCheck
+        ? '🛡️ 已开启强制二源交叉验证：每题都会再查一个来源（更准，但更慢）'
+        : '已关闭强制二源交叉验证：只在主源把握不足或多选题时查第二源');
+    });
+
+    // ---------------------------------------------------------------- 播放开关
+    [['fx-unlock', 'unlockBlur', '解除失焦暂停'],
+      ['fx-keep', 'keepPlaying', '意外暂停续播'],
+      ['fx-mute', 'muteForAutoplay', '静音自动播放']].forEach(([id, key, label]) => {
+      on(id, () => {
+        CONFIG[key] = !CONFIG[key];
+        store.set('cfg_' + key, CONFIG[key]);
+        syncToggles();
+        syncBadges(['play']);
+        if ((key === 'unlockBlur' || key === 'keepPlaying') && CONFIG[key]) playerGuard.install();
+        if (key === 'unlockBlur' && !CONFIG[key] && playerGuard.installed) {
+          log('已停止拦截失焦；如需完全恢复平台原有的暂停行为，请刷新播放页', 'warn');
+        }
+        log(`${label}已${CONFIG[key] ? '开启' : '关闭'}`);
+      });
+    });
+
+    // ---------------------------------------------------------------- 检查更新
+    on('fx-checkupdate', async () => {
+      const checkBtn = $('fx-checkupdate');
+      if (checkBtn) checkBtn.disabled = true;
+      api.setState('正在检查更新…');
+      const r = await checkUpdate();
+      if (checkBtn) checkBtn.disabled = false;
+      // 有一个源没查通时说明另个源的结果，避免用户以为「已是最新」是确定的
+      const via = r.error ? ''
+        : `（来源 ${r.source}${r.failed && r.failed.length ? `，${r.failed.join('、')} 不可达` : ''}）`;
+      if (r.error) {
+        log('检查更新失败：' + r.error, 'warn');
+        api.setState('检查更新失败');
+      } else if (r.newer) {
+        log(`发现新版本 ${r.remote}（当前 ${VERSION}）${via}，点提示条前往下载`, 'ok');
+        api.setState(`有新版本 ${r.remote}`);
+        api.showNotice(`有新版本 ${r.remote}，点击此处打开下载页`, 'info');
+        const n = $('fx-notice');
+        if (n) {
+          n.onclick = () => window.open(
+            'https://github.com/Gnayiel/civil-servant-training-assistant/releases/latest', '_blank');
+        }
+      } else {
+        log(`已是最新版本（${VERSION}）${via}`, 'ok');
+        api.setState('已是最新');
+      }
+    });
 
     // ---------------------------------------------------------------- AI 设置
     const settingsBtn = $('fx-settings-btn');
     const settingsBox = $('fx-settings');
+    const formErr = $('fx-f-err');
+
+    function showFormErr(msg) {
+      if (!formErr) return;
+      formErr.textContent = msg;
+      formErr.style.display = msg ? 'block' : 'none';
+    }
+
     if (settingsBtn && settingsBox) {
       settingsBtn.addEventListener('click', () => {
         const show = settingsBox.style.display === 'none';
         settingsBox.style.display = show ? 'block' : 'none';
+        showFormErr('');
         if (show) {
           $('fx-f-url').value = CONFIG.aiUrl || '';
-          $('fx-f-model').value = CONFIG.aiModel || '';
           $('fx-f-key').value = CONFIG.aiKey || '';
+          $('fx-f-model').value = CONFIG.aiModel || '';
         }
       });
     }
-    const saveBtn = $('fx-f-save');
-    if (saveBtn) {
-      saveBtn.addEventListener('click', () => {
-        CONFIG.aiUrl = $('fx-f-url').value.trim();
-        CONFIG.aiModel = $('fx-f-model').value.trim();
-        CONFIG.aiKey = $('fx-f-key').value.trim();
-        store.set('cfg_aiUrl', CONFIG.aiUrl);
-        store.set('cfg_aiModel', CONFIG.aiModel);
-        store.set('cfg_aiKey', CONFIG.aiKey);
-        log(`接口已保存：${CONFIG.aiUrl || '（空）'} / ${CONFIG.aiModel || '（空）'}`, 'ok');
-        settingsBox.style.display = 'none';
-        api.refresh();
-      });
-    }
-    const cancelBtn = $('fx-f-cancel');
-    if (cancelBtn) cancelBtn.addEventListener('click', () => { settingsBox.style.display = 'none'; });
 
-    // ---------------------------------------------------------------- 题库
-    const on = (id, fn) => {
-      const b = $(id);
-      if (b) b.addEventListener('click', fn);
-    };
-    on('fx-export', () => exportJson());
-    on('fx-export-csv', () => exportCsv());
-    on('fx-import', async () => {
-      try {
-        const txt = await navigator.clipboard.readText();
-        if (!txt) {
-          log('剪贴板为空：请先把题库 JSON 或 CSV 复制到剪贴板', 'warn');
-          return;
-        }
-        const r = importData(txt);
-        log(`导入：${r.msg}`, r.ok ? 'ok' : 'error');
-        api.refresh();
-      } catch (e) {
-        log('读取剪贴板失败（浏览器可能拒绝授权）：' + e.message, 'error');
-      }
-    });
-    on('fx-reseed', () => {
-      const n = mergeSeed();
-      log(n ? `补全内置题库 ${n} 条` : '内置题库已齐，无需补全', 'ok');
+    on('fx-f-save', () => {
+      const url = $('fx-f-url').value.trim();
+      const key = $('fx-f-key').value.trim();
+      const model = $('fx-f-model').value.trim();
+      if (!url) { showFormErr('接口地址不能为空'); return; }
+      if (!/^https:\/\//i.test(url)) { showFormErr('接口地址必须以 https:// 开头'); return; }
+      if (!key) { showFormErr('API Key 不能为空'); return; }
+      CONFIG.aiUrl = url;
+      CONFIG.aiKey = key;
+      CONFIG.aiModel = model;
+      store.set('cfg_aiUrl', url);
+      store.set('cfg_aiKey', key);
+      store.set('cfg_aiModel', model);
+      showFormErr('');
+      settingsBox.style.display = 'none';
+      syncBadges(['api']);
+      log(`接口已保存：${url} / ${model || '默认模型'}`, 'ok');
       api.refresh();
     });
+
+    on('fx-f-cancel', () => {
+      settingsBox.style.display = 'none';
+      showFormErr('');
+    });
+
+    // 测试连接：真发一次最小请求，把 HTTP 状态与耗时写进日志
+    on('fx-test', async () => {
+      if (!CONFIG.aiUrl || !CONFIG.aiKey) {
+        log('测试连接：先填好接口地址与 API Key 并保存', 'warn');
+        return;
+      }
+      log('测试连接：正在请求…');
+      const t0 = Date.now();
+      const r = await httpPost(CONFIG.aiUrl, {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + CONFIG.aiKey,
+      }, JSON.stringify({
+        model: CONFIG.aiModel || 'deepseek-chat',
+        messages: [{ role: 'user', content: '只回复 ok' }],
+        max_tokens: 8,
+      }), { timeout: CONFIG.aiTimeout });
+      const ms = Date.now() - t0;
+      if (r.ok) log(`测试连接成功：HTTP ${r.status}，${ms} ms`, 'ok');
+      else log(`测试连接失败：${failText(r, 'AI 接口')}（${ms} ms）`, 'error');
+    });
+
+    // ---------------------------------------------------------------- 题库与本场
+    on('fx-export', () => {
+      // 一次导出两个文件：CSV 给 Excel 看，JSON 字段完整、可无损往返（与法宣一致）
+      exportCsv();
+      exportJson();
+      log(`已导出答案库：CSV + JSON（题库 ${bankCount()} 题）`, 'ok');
+    });
+
+    on('fx-import', () => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.csv,.json,.txt,.tsv,text/csv,application/json';
+      input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          try {
+            log(`读取 ${file.name}（${(file.size / 1024).toFixed(1)} KB）`);
+            const r = importData(String(ev.target.result || ''));
+            log(`导入：${r.msg}`, r.ok ? 'ok' : 'error');
+            api.refresh();
+          } catch (err) {
+            log('导入失败：' + err.message, 'error');
+          }
+        };
+        reader.onerror = () => log(`读取 ${file.name} 失败`, 'error');
+        reader.readAsText(file, 'utf-8');
+      };
+      input.click();
+    });
+
+    // 解析成绩：交卷后、刷新结果页、重考都能再解析一次
+    on('fx-reparse', () => {
+      if (!collectSubmittedAnswers().items.length) {
+        log('当前页面没有可解析的作答记录，交卷后再点「解析成绩」', 'warn');
+        return;
+      }
+      log('🔄 手动解析成绩…');
+      reconcileAfterPass();
+      api.refresh();
+    });
+
+    // 导出争议题：两源答案冲突且拉不开差距的记录（观测用，不改变作答）
+    on('fx-disputes-export', () => {
+      const list = loadDisputes();
+      if (!list.length) {
+        log('导出争议题：暂无记录（两源答案一致或只有单源）');
+        api.showNotice('暂无可导出的争议题', 'info');
+        return;
+      }
+      downloadFile(`争议题-${stamp()}.json`, JSON.stringify({ at: Date.now(), list }, null, 2),
+        'application/json;charset=utf-8;');
+      log(`已导出争议题 ${list.length} 条`, 'ok');
+    });
+
+    // 关闭页：不关 → 8s → 15s → 30s 循环；倒计时中再点 = 取消
+    const AUTO_CLOSE_STEPS = [0, 8, 15, 30];
+    on('fx-autoclose', () => {
+      if (autoCloseTimer) { cancelAutoClose('手动取消'); return; }
+      const idx = AUTO_CLOSE_STEPS.indexOf(+CONFIG.autoCloseSec);
+      CONFIG.autoCloseSec = AUTO_CLOSE_STEPS[(idx + 1) % AUTO_CLOSE_STEPS.length];
+      store.set('cfg_autoCloseSec', CONFIG.autoCloseSec);
+      syncToggles();
+      log(CONFIG.autoCloseSec
+        ? `🕒 成绩解析/入库完成后 ${CONFIG.autoCloseSec} 秒自动关闭本页`
+        : '🕒 已关闭「自动关闭本页」');
+    });
+
+    // 清空本场：清的是本场作答记录，题库不受影响（与法宣同语义）
+    on('fx-clear-session', () => {
+      if (!history.length) { log('本场还没有作答记录'); return; }
+      if (!confirm(`确定清空本场 ${history.length} 条作答记录？\n清空后无法恢复（题库不受影响）。`)) {
+        log('已取消清空本场');
+        return;
+      }
+      if (examRunning) {
+        pausedFlag = true;
+        syncRunBtns();
+        log('已先暂停：清空本场后，点「继续」会从当前题重新作答');
+      }
+      history.length = 0;
+      store.set('lastExam', null);
+      api.refresh();
+      log('已清空本场作答记录，可重新开始答题', 'ok');
+    });
+
+    // 补全内置：脚本升级带来新题、或误清空后用它一次补回（本脚本独有）
+    on('fx-reseed', () => {
+      const n = mergeSeed();
+      log(n ? `补全内置题库 ${n} 题` : '内置题库已齐，无需补全', 'ok');
+      api.refresh();
+    });
+
+    // 清空题库：连内置一起清掉，用于题库被污染时重来（本脚本独有）
     on('fx-clear-bank', () => {
-      if (!confirm('清空全部题库？此操作不可撤销。')) return;
+      if (!confirm('清空全部题库？（连内置 442 题一起清，可用「补全内置」恢复）')) return;
       bankClearedAt = Date.now();
       store.set('bankClearedAt', bankClearedAt);
       bankCache = {};
@@ -1913,7 +2974,23 @@
       api.refresh();
     });
 
-    // ---------------------------------------------------------------- 日志组
+    // 手动对账：答题卡识别不出来时的兜底，按题号手填对错
+    on('fx-manual-reconcile', () => {
+      if (!history.length) { log('本场还没有作答记录，无法手动对账'); return; }
+      const tip = '题号=对/错，范围用 -，例如：1-8=对, 9=错';
+      const raw = prompt(`手动对账（本场 ${history.length} 条记录）\n${tip}`, '');
+      if (raw === null) { log('已取消手动对账'); return; }
+      const verdicts = parseManualVerdicts(raw);
+      const nums = Object.keys(verdicts);
+      if (!nums.length) {
+        log('手动对账没解析出有效内容。格式示例：1-8=对, 9=错', 'warn');
+        return;
+      }
+      log(`手动对账：识别 ${nums.length} 个题号（${nums.slice(0, 20).join(',')}${nums.length > 20 ? '…' : ''}）`);
+      applyManualVerdicts(verdicts);
+    });
+
+    // ---------------------------------------------------------------- 日志与自检
     on('fx-log-clear', () => api.clearLog());
     on('fx-log-copy', async () => {
       try {
@@ -1923,12 +3000,21 @@
         log('复制失败，请手动选择', 'warn');
       }
     });
+    on('fx-log-export', () => {
+      downloadFile(`日志-${stamp()}.txt`, api.logText(), 'text/plain;charset=utf-8;');
+      log(`已导出日志 ${logLines.length} 行`, 'ok');
+    });
     on('fx-diag', () => exportDiagnostics());
     on('fx-selftest', () => {
       const r = EXPORTS.selfTest();
       log(`自检：${r.total} 项，失败 ${r.failed}`, r.failed ? 'error' : 'ok');
       api.setState(r.failed ? `自检 ${r.failed} 项失败` : `自检 ${r.total} 项全过`);
     });
+
+    // 首次使用说明一句：按钮都在分类里，点标题展开
+    if (!store.get('panelGroups', null)) {
+      log('面板按钮已按分类收起：点分类标题（如「题库与本场」）展开同类按钮；展开状态会记住', 'info');
+    }
 
     // ---------------------------------------------------------------- 拖拽
     function makeDraggable(handle) {
@@ -1972,6 +3058,7 @@
     syncToggles();
     applyGroupState();
     syncBadges();
+    updateStats();          // 两行统计首屏就要有内容，不能等第一次 refresh
     api.setState('就绪');
     api.setTone('idle');
     return api;
@@ -2144,12 +3231,18 @@
       config: {
         autoAnswer: CONFIG.autoAnswer,
         autoSubmit: CONFIG.autoSubmit,
+        answerMode: CONFIG.answerMode,
+        speed: CONFIG.speed,
+        debug: CONFIG.debug,
+        forceCrossCheck: CONFIG.forceCrossCheck,
         unlockBlur: CONFIG.unlockBlur,
         keepPlaying: CONFIG.keepPlaying,
-        enableAI: CONFIG.enableAI,
+        muteForAutoplay: CONFIG.muteForAutoplay,
         aiUrl: CONFIG.aiUrl ? CONFIG.aiUrl.replace(/\/\/[^/]+/, '//***') : '',
         aiModel: CONFIG.aiModel,
         hasKey: !!CONFIG.aiKey,
+        disputes: loadDisputes().length,
+        history: history.length,
       },
       logs: logBuf.slice(-120).map((l) => scrubLine(l.line)),
     };
@@ -2237,11 +3330,14 @@
 
     if (isExamPage()) {
       const qs = parseExam();
-      panel.setState(`试卷页 · ${qs.length} 题`);
+      panel.setState('就绪');
       panel.setProgress(0, qs.length);
+      totalQ = qs.length;
       log(`检测到试卷，共 ${qs.length} 道题`);
       hookSubmitAlert();
       if (CONFIG.autoAnswer) {
+        // 只有显式开启过自动作答的老配置才会走到这里；默认要用户点「开始」
+        log('自动作答已开启，1.2 秒后开始（可在存储里把 cfg_autoAnswer 设为 false 关掉）');
         setTimeout(() => runExam(), 1200);
       }
       return;
@@ -2269,6 +3365,17 @@
     importData,
     versionNewer,
     parseVersion,
+    runBtnLabels,
+    parseManualVerdicts,
+    extractAnswer,
+    normalizeAnswer,
+    mergeCandidates,
+    extractAIAnswer,
+    clipQuery,
+    stripQueryEcho,
+    followPageRelevant,
+    isLetterAnswer,
+    lettersOf,
     setPanelState: (s) => { if (panel && panel.setState) panel.setState(s); },
     resolveSite,
     SITES,
@@ -2340,6 +3447,71 @@
         { label: 'jsDelivr', version: '1.2.0' },
         { label: 'GitHub Release', version: 'v1.2.0' },
       ]).label, 'jsDelivr');
+
+      // ---------- 答案引擎（与法宣同源，逐条守住它的判定规则） ----------
+      const O4 = [
+        { letter: 'A', text: '社会建设' },
+        { letter: 'B', text: '文化建设' },
+        { letter: 'C', text: '经济建设' },
+        { letter: 'D', text: '政治建设' },
+      ];
+      const OJ = [{ letter: 'A', text: '对' }, { letter: 'B', text: '错' }];
+      const ans = (raw, type = 'single', opts = O4) => {
+        const r = extractAnswer(raw, opts, type);
+        return r ? r.letters : null;
+      };
+      eq('判断题：明确字母优先于语义', ans('正确答案：B', 'judge', OJ), 'B');
+      eq('判断题：问句后的回答才采信', ans('下列说法是否正确？正确', 'judge', OJ), 'A');
+      eq('判断题：只有题干回显时宁可不答', ans('下列说法是否正确', 'judge', OJ), null);
+      eq('判断题：语义分支判否定', ans('题干不成立，这一说法错误', 'judge', OJ), 'B');
+      eq('纯字母答案', ans('B'), 'B');
+      eq('提示词后的字母', ans('正确答案：C'), 'C');
+      eq('提示词后紧跟干扰项时不取干扰字母', ans('正确答案：B，A项错误'), 'B');
+      eq('括号字母', ans('（D）'), 'D');
+      eq('裸字母：句首带选项原文', ans('A. 社会建设'), 'A');
+      eq('英文句子里不误取首字母', ans('The answer is B'), 'B');
+      eq('多选：纯字母串全取', ans('AC', 'multi'), 'AC');
+      eq('多选：只命中一个选项时不硬凑', ans('AC', 'single'), 'A');
+      eq('选项原文命中（唯一候选才敢用）', ans('新时代的矛盾是人民日益增长的美好生活需要，故选社会建设'), 'A');
+      eq('多个孤立字母时不猜（单选）', ans('我认为 A 和 C 都有可能', 'single'), null);
+      eq('字母判定：接受 A、B 写法', isLetterAnswer('A、B'), true);
+      eq('字母判定：中文不算字母答案', isLetterAnswer('答案'), false);
+      eq('字母提取只保留 A-Z', lettersOf('a、b，c'), 'ABC');
+
+      const ai = (raw, type = 'single') => extractAIAnswer(raw, O4, type);
+      eq('AI 结构化：JSON 直取', ai('{"answer":"B","confidence":0.9}').letters, 'B');
+      eq('AI 结构化：代码块包着也认', ai('```json\n{"answer":"C","confidence":0.8}\n```').letters, 'C');
+      eq('AI 结构化：显式 conf=0 不被抬成 0.9', ai('{"answer":"B","confidence":0}').conf, 0);
+      eq('AI 结构化：单选给两个字母视为自相矛盾（不采信结构化）',
+        (ai('{"answer":"AB","confidence":0.9}') || {}).structured, undefined);
+      eq('AI 文本兜底：无 JSON 时按文本抽', ai('我认为答案是 C').letters, 'C');
+
+      const merge2 = (a, b, type = 'single') => mergeCandidates([
+        { letters: a.l, conf: a.c, src: 'baidu' },
+        { letters: b.l, conf: b.c, src: 'ai' },
+      ], type, O4);
+      // 0.8 + 0.15 在浮点下是 0.9500000000000001，按两位小数比
+      eq('两源一致：取该答案并加把握',
+        Math.round(merge2({ l: 'B', c: 0.8 }, { l: 'B', c: 0.8 }).conf * 100) / 100, 0.95);
+      eq('两源一致：来源记为两个', merge2({ l: 'B', c: 0.8 }, { l: 'B', c: 0.8 }).srcs.length, 2);
+      eq('两源冲突且拉不开差距：宁可不答', merge2({ l: 'A', c: 0.9 }, { l: 'B', c: 0.85 }), null);
+      eq('两源冲突但一方明显更优：采用领先方',
+        merge2({ l: 'A', c: 0.9 }, { l: 'B', c: 0.4 }).letters, 'A');
+      eq('多选只给一个字母的候选被丢弃', mergeCandidates(
+        [{ letters: 'A', conf: 0.9, src: 'ai' }], 'multi', O4), null);
+
+      eq('题干截断保留头尾', clipQuery('甲'.repeat(40) + '乙'.repeat(40)).length, 61);
+      eq('查询词回显被剔除', /正确答案/.test(
+        stripQueryEcho('某题干 正确答案 选A 某题干 正确答案', ['某题干 正确答案'])), false);
+      eq('跟进页相关：题干出现在正文里', followPageRelevant('本题问的是新时代主要矛盾是什么', '新时代主要矛盾是什么'), true);
+      eq('跟进页相关：广告页判为无关', followPageRelevant('今天天气很好，欢迎光临本店', '新时代主要矛盾是什么'), false);
+
+      eq('顶栏：未运行时暂停禁用', runBtnLabels(false, false).pauseDisabled, true);
+      eq('顶栏：运行时主按钮为停止', runBtnLabels(true, false).stop, '停止');
+      eq('顶栏：暂停后按钮为继续', runBtnLabels(true, true).pause, '继续');
+      eq('手动对账：区间写法', parseManualVerdicts('1-3=对')[2], true);
+      eq('手动对账：单点判错', parseManualVerdicts('5=错')[5], false);
+      eq('手动对账：乱写不产生条目', Object.keys(parseManualVerdicts('随便写点')).length, 0);
 
       // 诊断包日志脱敏
       eq('遮蔽 URL 里的 token',

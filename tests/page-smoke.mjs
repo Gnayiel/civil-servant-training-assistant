@@ -129,6 +129,12 @@ function run(html, budgetMs, fakePath = '') {
 // ------------------------------------------------------------------ 试卷页
 console.log('\n[1/3] 试卷页：解析与填答');
 const examProbe = `
+// 与法宣一致：进试卷页不自动作答，必须点顶栏「开始」。探针先替用户点一下。
+setTimeout(function () {
+  var h0 = document.getElementById('csta-panel-host');
+  var b0 = h0 && h0.shadowRoot && h0.shadowRoot.querySelector('#fx-stop');
+  if (b0) b0.click();
+}, 400);
 setTimeout(function () {
   var r = { at: Date.now(), steps: [] };
   var step = function (name) { r.steps.push(name); };
@@ -146,7 +152,7 @@ setTimeout(function () {
     // 新面板：状态在 #fx-status，题库与试卷摘要移到分类 badge
     r.state = q('#fx-status');
     r.bankCnt = q('#fx-gb-bank');
-    r.examCnt = q('#fx-gb-exam');
+    r.modeCnt = q('#fx-gb-mode');
   }
   var parsed = window.__GWX_TEST__ ? window.__GWX_TEST__.parseExam() : [];
   r.parsed = parsed.map(function (q) {
@@ -169,7 +175,7 @@ setTimeout(function () {
   }
   // 开关是按钮而非勾选框：点击切换，并落到存储
   if (host && host.shadowRoot) {
-    var cb = host.shadowRoot.querySelector('#fx-autosubmit');
+    var cb = host.shadowRoot.querySelector('#fx-submit');
     r.toggleIsButton = !!cb && cb.tagName === 'BUTTON';
     r.toggleActiveBefore = cb ? cb.classList.contains('active') : null;
     if (cb) cb.click();
@@ -225,19 +231,26 @@ setTimeout(function () {
     r.reconciledOk = entry ? entry.ok : 0;
   });
 
-  // 面板主按钮在作答中应变成「停止作答」，停止后能再次开始
+  // 顶栏：与法宣同结构——「开始/停止」「暂停」「收起」，未运行时暂停必须禁用。
+  // 文案的三种状态由纯函数 runBtnLabels 在自检里覆盖，这里只验渲染结果。
   guard('btnFlow', function () {
     var host2 = document.getElementById('csta-panel-host');
     var sr = host2 && host2.shadowRoot;
     if (!sr) { r.btnFlow = 'no-panel'; return; }
-    var btn = sr.querySelector('#fx-primary');
+    var btn = sr.querySelector('#fx-stop');
+    var pause = sr.querySelector('#fx-pause');
+    var toggle = sr.querySelector('#fx-toggle');
     r.btnTextIdle = btn ? btn.textContent : null;
-    // 借 setState 驱动按钮文案（与 runExam 内部用的是同一个入口）
-    window.__GWX_TEST__.setPanelState && window.__GWX_TEST__.setPanelState('正在作答…');
-    r.btnTextRunning = btn ? btn.textContent : null;
-    r.btnHasStopClass = btn ? btn.classList.contains('running') : null;
-    window.__GWX_TEST__.setPanelState && window.__GWX_TEST__.setPanelState('作答 5/5');
-    r.btnTextAfter = btn ? btn.textContent : null;
+    r.btnHasStopClass = btn ? btn.classList.contains('active') : null;
+    r.pauseText = pause ? pause.textContent : null;
+    r.pauseDisabled = pause ? pause.disabled : null;
+    r.toggleText = toggle ? toggle.textContent : null;
+    var lb = window.__GWX_TEST__.runBtnLabels
+      ? window.__GWX_TEST__.runBtnLabels(true, false) : null;
+    r.labelRunning = lb ? lb.stop : null;
+    var lb2 = window.__GWX_TEST__.runBtnLabels
+      ? window.__GWX_TEST__.runBtnLabels(true, true) : null;
+    r.labelPaused = lb2 ? lb2.pause : null;
   });
 
   // 模拟「脚本升级带来新题」：内置题库变化时 mergeSeed 应把缺失的补回来。
@@ -342,9 +355,9 @@ ok('面板有进度条', exam.hasProgress === true);
 ok('面板有日志框', exam.hasLogBox === true);
 ok('版本徽章带 v 前缀', /^v\S+$/.test(exam.verBadge || ''), String(exam.verBadge));
 ok('面板标题为「公务员网络培训助手」', exam.title === '公务员网络培训助手', String(exam.title));
-ok('底部统计显示适配省份（本地文件为通用适配）',
-  /通用适配/.test(exam.siteLabel || ''), String(exam.siteLabel));
-ok('统计行同时显示题库条数', /题库 \d+ 条/.test(exam.siteLabel || ''), String(exam.siteLabel));
+ok('底部统计第一行是题库与存储占用',
+  /📊 题库 \d+ 题/.test(exam.siteLabel || '') && /KB/.test(exam.siteLabel || ''), String(exam.siteLabel));
+ok('统计行同时显示题库条数', /题库 \d+ 题/.test(exam.siteLabel || ''), String(exam.siteLabel));
 ok('面板开关写入存储', exam.savedAutoSubmit === 'true', String(exam.savedAutoSubmit));
 ok('诊断包格式正确', exam.diagFormat === 'gwypx-diagnostics', String(exam.diagFormat));
 ok('诊断包识别页面类型为 exam', exam.diagPageType === 'exam', String(exam.diagPageType));
@@ -360,9 +373,12 @@ ok('对账写回的是改后的答案（不是脚本快照的 C）',
   JSON.stringify(exam.reconciledAnswer));
 ok('对账把 ok 计为 1', exam.reconciledOk === 1, String(exam.reconciledOk));
 ok('主按钮初始为「开始」', exam.btnTextIdle === '开始', String(exam.btnTextIdle));
-ok('作答中主按钮变为「停止」', exam.btnTextRunning === '停止', String(exam.btnTextRunning));
-ok('运行态带 running 样式类', exam.btnHasStopClass === true);
-ok('作答结束后按钮回到「开始」', exam.btnTextAfter === '开始', String(exam.btnTextAfter));
+ok('初始态主按钮不带 active 类', exam.btnHasStopClass === false);
+ok('暂停按钮文案为「暂停」', exam.pauseText === '暂停', String(exam.pauseText));
+ok('未运行时暂停按钮禁用', exam.pauseDisabled === true, String(exam.pauseDisabled));
+ok('收起按钮文案为「收起」', exam.toggleText === '收起', String(exam.toggleText));
+ok('运行态主按钮文案为「停止」', exam.labelRunning === '停止', String(exam.labelRunning));
+ok('暂停态按钮文案为「继续」', exam.labelPaused === '继续', String(exam.labelPaused));
 ok('种子指纹稳定', exam.seedSigStable === true, String(exam.seedSig));
 ok('题库已齐时 mergeSeed 幂等（返回 0）', exam.mergeWhenFull === 0,
   String(exam.mergeWhenFull));
@@ -379,9 +395,9 @@ ok('导入没有把「答案来源」当成答案',
 ok('导入后答案内容正确',
   JSON.stringify(exam.importedAnswer) === JSON.stringify(['人民日益增长的美好生活需要和不平衡不充分的发展之间的矛盾']),
   JSON.stringify(exam.importedAnswer));
-ok('面板显示已作答 5/5', /5\/5/.test(exam.state || ''), exam.state);
-ok('面板显示题库条数', /\d+ 条/.test(exam.bankCnt || ''), exam.bankCnt);
-ok('面板识别出试卷题型', /5 题/.test(exam.examCnt || ''), exam.examCnt);
+ok('面板状态行是法宣的状态词', /就绪|答题中|已停止/.test(exam.state || ''), exam.state);
+ok('面板显示题库条数', /题库 \d+ 题/.test(exam.bankCnt || ''), exam.bankCnt);
+ok('面板摘要显示当前模式与节奏', /百度搜索|AI智能/.test(exam.modeCnt || ''), exam.modeCnt);
 
 // ------------------------------------------------------------------ 播放页
 console.log('\n[2/3] 播放页：失焦解锁');
