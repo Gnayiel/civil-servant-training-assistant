@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.3.2
+// @version      1.3.3
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
@@ -33,7 +33,7 @@
 
   // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
   // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.2';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.3';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';
@@ -72,6 +72,9 @@
     // 默认只重试一次的代价是偶发超时能救回来，又不至于把请求数翻几倍。
     maxRetry: 1,
     retryBaseMs: 600,          // 退避基数：第 n 次重试等 基数 × 2^n
+    // 同一来源连续失败几次就本场停用它。3 次是「偶发」与「整体不可用」的分界：
+    // 百度反爬通常第一题就挂，正常网络抖动很少连挂三题。
+    sourceFailLimit: 3,
 
     // ---------- 会话答案缓存 ----------
     // 同一份卷里重复的题、停止后重开、重考同一份卷，都不该重新联网。
@@ -1166,6 +1169,8 @@
    */
   function retriable(r) {
     if (!r || r.ok) return false;
+    // abort 是我们自己叫停的，重试等于跟用户对着干
+    if (r.err === 'abort') return false;
     if (r.err === 'network' || r.err === 'timeout') return true;
     return r.status >= 500 && r.status < 600;
   }
@@ -1191,8 +1196,46 @@
     return last;
   }
 
-  /** 单次 GET。超时按「配置值」与「本题剩余预算」取小，避免一题拖成几分钟 */
+  /**
+   * 在途请求登记表。
+   *
+   * 为什么要它：「停止」以前只在两题之间生效，正在飞的请求照样跑完 ——
+   * 单题网络预算 20 秒，用户点了停止最多要干等 20 秒，且按钮还停在「停止」上，
+   * 看起来像没反应。GM_xmlhttpRequest 返回的句柄有 abort()，
+   * 登记起来一次性中止，停止就是真的立刻停。
+   */
+  const inflight = new Set();
+
+  function trackRequest(handle) {
+    if (handle && typeof handle.abort === 'function') inflight.add(handle);
+    return handle;
+  }
+
+  function untrackRequest(handle) {
+    if (handle) inflight.delete(handle);
+  }
+
+  /** 中止全部在途请求；返回中止了几个（用于日志） */
+  function abortInflight() {
+    const n = inflight.size;
+    for (const h of inflight) {
+      try { h.abort(); } catch (e) { /* 已结束的句柄会抛，忽略 */ }
+    }
+    inflight.clear();
+    return n;
+  }
+
+  const abortedResult = () => ({ ok: false, status: 0, text: '', err: 'abort', note: '已中止' });
+
+  /**
+   * 单次 GET。超时按「配置值」与「本题剩余预算」取小，避免一题拖成几分钟。
+   *
+   * ctx.aborted 是协作式中止：只 abort 在途请求还不够 —— 百度那条通道是
+   * 「入口 1 失败 → 入口 2」的循环，掐掉第一个之后它马上又发第二个，
+   * 用户看到的仍然是「点了停止没反应」。所以每次发请求前都要问一句「还该继续吗」。
+   */
   function httpGetOnce(url, ctx = {}) {
+    if (ctx.aborted && ctx.aborted()) return Promise.resolve(abortedResult());
     const left = ctx.deadline ? Math.max(0, ctx.deadline - Date.now()) : CONFIG.baiduTimeout;
     const timeout = Math.max(1000, Math.min(ctx.timeout || CONFIG.baiduTimeout, left || 1000));
     return new Promise((resolve) => {
@@ -1200,7 +1243,9 @@
         resolve({ ok: false, status: 0, text: '', err: 'no-gm', note: '当前环境不支持 GM_xmlhttpRequest' });
         return;
       }
-      GM_xmlhttpRequest({
+      let h = null;
+      const done = (v) => { untrackRequest(h); resolve(v); };
+      h = trackRequest(GM_xmlhttpRequest({
         method: 'GET',
         url,
         headers: ctx.headers || {},
@@ -1208,11 +1253,13 @@
         onload: (r) => {
           // 超大页面只留前 30 万字符：正文关键词都在前面，全量留在内存里只会拖慢解析
           const text = String(r.responseText || '').slice(0, CONFIG.maxResponseChars);
-          resolve({ ok: r.status >= 200 && r.status < 300, status: r.status, text });
+          done({ ok: r.status >= 200 && r.status < 300, status: r.status, text });
         },
-        onerror: () => resolve({ ok: false, status: 0, text: '', err: 'network' }),
-        ontimeout: () => resolve({ ok: false, status: 0, text: '', err: 'timeout' }),
-      });
+        onerror: () => done({ ok: false, status: 0, text: '', err: 'network' }),
+        ontimeout: () => done({ ok: false, status: 0, text: '', err: 'timeout' }),
+        // abort() 后油猴调 onabort；不处理的话这个 Promise 永远悬着
+        onabort: () => done({ ok: false, status: 0, text: '', err: 'abort' }),
+      }));
     });
   }
 
@@ -1223,6 +1270,7 @@
   }
 
   function httpPostOnce(url, headers, body, ctx = {}) {
+    if (ctx.aborted && ctx.aborted()) return Promise.resolve(abortedResult());
     const left = ctx.deadline ? Math.max(0, ctx.deadline - Date.now()) : (ctx.timeout || CONFIG.aiTimeout);
     const timeout = Math.max(1000, Math.min(ctx.timeout || CONFIG.aiTimeout, left || 1000));
     return new Promise((resolve) => {
@@ -1230,20 +1278,23 @@
         resolve({ ok: false, status: 0, text: '', err: 'no-gm', note: '当前环境不支持 GM_xmlhttpRequest' });
         return;
       }
-      GM_xmlhttpRequest({
+      let h = null;
+      const done = (v) => { untrackRequest(h); resolve(v); };
+      h = trackRequest(GM_xmlhttpRequest({
         method: 'POST',
         url,
         headers,
         data: body,
         timeout,
-        onload: (r) => resolve({
+        onload: (r) => done({
           ok: r.status >= 200 && r.status < 300,
           status: r.status,
           text: String(r.responseText || ''),
         }),
-        onerror: () => resolve({ ok: false, status: 0, text: '', err: 'network' }),
-        ontimeout: () => resolve({ ok: false, status: 0, text: '', err: 'timeout' }),
-      });
+        onerror: () => done({ ok: false, status: 0, text: '', err: 'network' }),
+        ontimeout: () => done({ ok: false, status: 0, text: '', err: 'timeout' }),
+        onabort: () => done({ ok: false, status: 0, text: '', err: 'abort' }),
+      }));
     });
   }
 
@@ -1257,6 +1308,7 @@
     if (r.err === 'timeout') return who + '：请求超时';
     if (r.err === 'network') return who + '：网络错误或被 @connect 白名单拦截';
     if (r.err === 'no-gm') return who + '：当前环境不支持跨域请求';
+    if (r.err === 'abort') return who + '：已中止';
     return who + (r.status ? `：HTTP ${r.status}` : '：请求失败');
   }
 
@@ -1274,8 +1326,10 @@
     let budgetSpent = false;
     let followWarned = false;
     for (const url of entries) {
+      if (ctx.aborted && ctx.aborted()) { note = '已中止'; return { text: null, note, budgetSpent, aborted: true }; }
       if (ctx.deadline && Date.now() >= ctx.deadline) { budgetSpent = true; note = '本题网络预算已用完'; break; }
       const r = await httpGet(url, { ...ctx, headers: { 'User-Agent': UA } });
+      if (r.err === 'abort') { note = '已中止'; return { text: null, note, budgetSpent, aborted: true }; }
       if (!r.ok) { note = failText(r, '百度'); continue; }
       // 反爬/验证码/跳转页识别
       if (/安全验证|请输入验证码|访问异常|网络不给力/.test(r.text.slice(0, 3000))) {
@@ -1291,6 +1345,7 @@
         .map((m) => m[1].replace(/&amp;/g, '&'))
         .slice(0, CONFIG.baiduFollowLinks);
       for (const u of links) {
+        if (ctx.aborted && ctx.aborted()) { note = '已中止'; return { text: null, note, budgetSpent, aborted: true }; }
         if (ctx.deadline && Date.now() >= ctx.deadline) { budgetSpent = true; break; }
         // 跟进页是补充信息，不重试：把预算耗在次要页面上会让整题超时
         const pr = await httpGet(u, { ...ctx, headers: { 'User-Agent': UA }, noRetry: true });
@@ -1354,8 +1409,10 @@
   async function queryAI(stem, options, type, ctx = {}) {
     const url = CONFIG.aiUrl;
     const key = CONFIG.aiKey;
-    if (!url) return { text: null, note: '未设置接口地址，AI 模式不可用' };
-    if (!key) return { text: null, note: '未设置 API Key，AI 模式不可用' };
+    // skipped：这不是「AI 挂了」，是用户压根没配。不能拿它给 AI 记失败，
+    // 否则三题之后 AI 就被熔断，用户配好了也得重新点开始。
+    if (!url) return { text: null, note: '未设置接口地址，AI 模式不可用', skipped: true };
+    if (!key) return { text: null, note: '未设置 API Key，AI 模式不可用', skipped: true };
 
     const typeTxt = type === 'multi' ? '多选题' : type === 'judge' ? '判断题' : '单选题';
     const rule = type === 'multi'
@@ -1400,6 +1457,38 @@
       return { text: null, note: apiErr ? `AI 返回错误：${String(apiErr).slice(0, 120)}` : 'AI 返回内容为空' };
     }
     return { text: content, note: '' };
+  }
+
+  // ---------------------------------------------------------------- 来源熔断
+  /**
+   * 连续失败就暂时停用某个来源（熔断）。
+   *
+   * 真实场景：百度对大范围访问经常直接甩「安全验证」。一旦是这样，
+   * 每道题都要按「2 个入口 × 8 秒超时 + 重试」走完，最后什么都没捞到 ——
+   * 10 道题的卷子光等百度就要三五分钟，而且全程不知道在等什么。
+   * 连挂 3 题就判定这个来源当前不可用，本次运行不再试它，并在日志里说明原因与出路。
+   *
+   * 熔断只在本场有效（点「开始」或切换模式会重置）：下一次可能就通了，
+   * 不能把一次失败背到永久。
+   */
+  const sourceBreaker = { baidu: { fails: 0, open: false }, ai: { fails: 0, open: false } };
+
+  function noteSourceResult(src, ok) {
+    const b = sourceBreaker[src];
+    if (!b) return b;
+    if (ok) { b.fails = 0; b.open = false; return b; }
+    b.fails += 1;
+    if (b.fails >= Math.max(1, +CONFIG.sourceFailLimit || 3)) b.open = true;
+    return b;
+  }
+
+  function sourceBlocked(src) {
+    const b = sourceBreaker[src];
+    return !!(b && b.open);
+  }
+
+  function resetSourceBreaker() {
+    Object.keys(sourceBreaker).forEach((k) => { sourceBreaker[k].fails = 0; sourceBreaker[k].open = false; });
   }
 
   // ---------------------------------------------------------------- 会话答案缓存
@@ -1474,33 +1563,66 @@
     }
     const budgetMs = Math.max(1000, +CONFIG.queryBudgetMs || 20000);
     const deadline = Date.now() + budgetMs;
-    const order = CONFIG.answerMode === 'ai' ? ['ai', 'baidu'] : ['baidu', 'ai'];
+    const pref = CONFIG.answerMode === 'ai' ? ['ai', 'baidu'] : ['baidu', 'ai'];
+    // 被熔断的来源直接剔出本次候选；全被剔掉时明确告知，而不是空等 20 秒
+    const order = pref.filter((src) => !sourceBlocked(src));
+    if (!order.length) {
+      return {
+        cand: null,
+        notes: ['所有来源都已熔断（连续失败）：请检查网络或切到另一种模式后重新点「开始」'],
+        budget: false,
+      };
+    }
+    if (order.length < pref.length) {
+      const off = pref.filter((src) => sourceBlocked(src)).map((src) => SRC_NAME[src] || src);
+      notes.push(`${off.join('、')} 连续失败已暂停使用，本题只查其余来源`);
+    }
     const cands = [];
     let budgetSpent = false;
     let dispute = null;
 
+    // 协作式中止：runExam 里传 () => examAbort，查询链每一步都会问「还该继续吗」
+    const stopped = typeof opts.aborted === 'function' ? opts.aborted : () => false;
     const runSource = (src) => (src === 'ai'
-      ? queryAI(stem, options, type, { deadline })
-      : queryBaidu(stem, { deadline }));
+      ? queryAI(stem, options, type, { deadline, aborted: stopped })
+      : queryBaidu(stem, { deadline, aborted: stopped }));
+
+    // failText 返回的文案本身已带「百度：」前缀，这里再套一层就成了「百度：百度：网络错误」。
+    // 统一走这个函数拼接，前缀只出现一次。
+    const pushNote = (src, note) => {
+      const who = SRC_NAME[src] || src;
+      const text = String(note || '未搜到相关内容');
+      notes.push(text.startsWith(who) ? text : `${who}：${text}`);
+    };
 
     const absorb = (src, r) => {
-      if (!r) { notes.push(`${SRC_NAME[src]}：无响应`); return null; }
+      if (!r) { noteSourceResult(src, false); pushNote(src, '无响应'); return null; }
       if (r.budgetSpent) budgetSpent = true;
+      // 三种情况不算这个来源的错：
+      //   abort  —— 用户点了停止，是我们自己叫停的
+      //   skipped —— 没配置（AI 未填接口），不是故障
+      const counted = r.err !== 'abort' && !r.skipped;
       if (!r.text) {
-        notes.push(`${SRC_NAME[src]}：${r.note || '未搜到相关内容'}`);
+        if (counted) noteSourceResult(src, false);
+        pushNote(src, r.note);
+        if (counted && sourceBlocked(src)) {
+          notes.push(`${SRC_NAME[src]} 连续 ${CONFIG.sourceFailLimit} 次失败，本次运行不再尝试它`
+            + '（切模式或重新点「开始」可恢复）');
+        }
         return null;
       }
       const c = src === 'ai'
         ? extractAIAnswer(r.text, options, type)
         : extractAnswer(r.text, options, type);
-      if (!c) { notes.push(`${SRC_NAME[src]}：有返回但解析不出答案`); return null; }
+      if (!c) { pushNote(src, '有返回但解析不出答案'); return null; }
+      noteSourceResult(src, true);   // 拿到正文就算这条通路是活的，解析不出不算它坏
       if (src === 'baidu') {
         // 搜索页回显容易虚高，统一折减后再参与合并
         c.conf = Math.max(0.3, Math.round(c.conf * CONFIG.baiduConfFactor * 100) / 100);
         c.why = `${c.why}·已按百度可信度折减`;
       }
       cands.push({ ...c, src });
-      notes.push(`${SRC_NAME[src]}：${c.letters}（${c.why}，把握 ${Math.round(c.conf * 100)}%）`);
+      pushNote(src, `${c.letters}（${c.why}，把握 ${Math.round(c.conf * 100)}%）`);
       return c;
     };
 
@@ -1517,6 +1639,7 @@
       let needSecond = true;
       for (const src of order) {
         if (!needSecond) break;
+        if (stopped()) { notes.push('已中止'); break; }
         if (Date.now() >= deadline) {
           budgetSpent = true;
           notes.push(`本题网络预算（${Math.round(budgetMs / 1000)} 秒）已用完，先按已获得的结果作答`);
@@ -1553,9 +1676,14 @@
       }
       log(`题库命中但选项对不上，转联网：${q.stem.slice(0, 20)}…`, 'warn');
     }
-    const r = await queryAnswer(q.stem, q.options, q.type, { forceTwoSources: CONFIG.forceCrossCheck });
+    const r = await queryAnswer(q.stem, q.options, q.type, {
+      forceTwoSources: CONFIG.forceCrossCheck,
+      aborted: () => examAbort,
+    });
     r.notes.forEach((n) => log(n, 'debug'));   // 只有开调试才逐条显示通道明细
     if (!r.cand) {
+      // 用户点了停止导致的「查不到」不是真的失败，别用 warn 制造噪音
+      if (examAbort) return null;
       if (r.notes.length) log(`${q.qid} 题未取到答案：${r.notes.join('；')}`, 'warn');
       return null;
     }
@@ -1720,6 +1848,8 @@
           continue;
         }
         const decided = await decide(q);
+        // 中止会让 decide 返回 null，但那不是「这题没答案」，不该记一条 warn
+        if (examAbort) break;
         if (!decided) {
           unknown++;
           unknownList.push(q);
@@ -1769,8 +1899,10 @@
       });
 
       if (examAbort) {
-        panel.setState(`已停止（${done}/${questions.length} 题已填）`);
+        // 状态词与其它路径统一成「已停止」，数字交给统计行（避免面板出现四种停止文案）
+        panel.setState('已停止');
         panel.setTone('busy');
+        log(`已停止：本次填了 ${done}/${questions.length} 题`);
         return;
       }
 
@@ -2831,7 +2963,10 @@
       if (examRunning) {
         examAbort = true;
         pausedFlag = false;
-        log(`已停止（已答 ${history.length} 题）· 点「开始」可从当前题继续`, 'warn');
+        // 先掐掉在途请求，再改界面状态：否则要等当前这题的 20 秒预算跑完才停得下来
+        const killed = abortInflight();
+        log(`已停止（已答 ${history.length} 题）`
+          + `${killed ? `，已中止 ${killed} 个在途请求` : ''} · 点「开始」可从当前题继续`, 'warn');
         api.setState('已停止');
         syncRunBtns();
         return;
@@ -2842,6 +2977,8 @@
         return;
       }
       log('开始答题');
+      // 每次重新开始都是一次新尝试：上一轮熔断的源要放出来，不然用户永远回不去
+      resetSourceBreaker();
       await runExam();
     });
 
@@ -2879,6 +3016,8 @@
         syncToggles();
         syncBadges(['mode']);
         updateStats();
+        // 换模式往往就是为了绕开某个不通的来源，顺手把熔断清掉
+        resetSourceBreaker();
         log(`已切到「${b.dataset.mode === 'ai' ? 'AI智能' : '百度搜索'}」模式`);
       });
     });
@@ -3420,6 +3559,13 @@
         hasKey: !!CONFIG.aiKey,
         disputes: loadDisputes().length,
         history: history.length,
+        // 熔断状态：用户报「百度查不到」时，这两个字段能立刻区分
+        // 「百度反爬」和「配置/网络问题」，省掉一轮来回问
+        sources: {
+          baidu: { fails: sourceBreaker.baidu.fails, open: sourceBreaker.baidu.open },
+          ai: { fails: sourceBreaker.ai.fails, open: sourceBreaker.ai.open },
+        },
+        cacheSize: answerCache.size,
       },
       logs: logBuf.slice(-120).map((l) => scrubLine(l.line)),
     };
@@ -3461,7 +3607,7 @@
       const key = ev.key.toLowerCase();
       if (key === 'a') {
         ev.preventDefault();
-        if (isExamPage()) runExam();
+        if (isExamPage()) { resetSourceBreaker(); runExam(); }
         else log('当前页面不是试卷页', 'warn');
       } else if (key === 'h') {
         ev.preventDefault();
@@ -3548,6 +3694,9 @@
     cacheLookup,
     cacheStore,
     retriable,
+    noteSourceResult,
+    sourceBlocked,
+    resetSourceBreaker,
     extractAnswer,
     normalizeAnswer,
     mergeCandidates,
@@ -3710,7 +3859,30 @@
       eq('缓存：超上限按先进先出淘汰', cm2.size, 3);
       eq('缓存：最旧的键被淘汰', cm2.has('k0'), false);
 
+      // ---------- 来源熔断 ----------
+      resetSourceBreaker();
+      eq('熔断：初始不阻断', sourceBlocked('baidu'), false);
+      noteSourceResult('baidu', false);
+      eq('熔断：连挂 1 次还放行', sourceBlocked('baidu'), false);
+      noteSourceResult('baidu', false);
+      eq('熔断：连挂 2 次仍放行', sourceBlocked('baidu'), false);
+      noteSourceResult('baidu', false);
+      eq('熔断：连挂 3 次开始阻断', sourceBlocked('baidu'), true);
+      noteSourceResult('baidu', true);
+      eq('熔断：拿到正文后立刻恢复', sourceBlocked('baidu'), false);
+      noteSourceResult('baidu', false);
+      noteSourceResult('baidu', false);
+      eq('熔断：恢复后计数从零重来', sourceBlocked('baidu'), false);
+      noteSourceResult('baidu', false);
+      eq('熔断：再连挂 3 次才又阻断', sourceBlocked('baidu'), true);
+      eq('熔断：只影响出问题的来源（AI 不受牵连）', sourceBlocked('ai'), false);
+      resetSourceBreaker();
+      eq('熔断：重置后放行', sourceBlocked('baidu'), false);
+      eq('熔断：未知来源不报错', noteSourceResult('nope', false), undefined);
+
       // ---------- 重试判定 ----------
+      eq('重试：主动中止不重试（用户点了停止）',
+        retriable({ ok: false, err: 'abort', status: 0 }), false);
       eq('重试：网络错误可重试', retriable({ ok: false, err: 'network', status: 0 }), true);
       eq('重试：超时可重试', retriable({ ok: false, err: 'timeout', status: 0 }), true);
       eq('重试：502 可重试', retriable({ ok: false, err: '', status: 502 }), true);
