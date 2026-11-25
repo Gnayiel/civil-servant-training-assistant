@@ -67,6 +67,23 @@ for (const f of files) {
 
   // 不要用 pull_request_target：它会带着写权限去检出外部 PR 的代码
   ok(`${f} 不用 pull_request_target`, !/pull_request_target/.test(text));
+
+  // 体积预算只能有 package.json 一个来源。
+  // release.yml 里曾硬编码「预算 200 KB」，而实际是 270 —— 于是每一版 Release 说明
+  // 都写着「脚本体积：264.5 KB（预算 200 KB）」，看起来像发版超了自身上限。
+  // 这种「数字写死在别处」的问题在体积预算上已经踩过两次（selftest / release.mjs），
+  // 一次在 workflow 里不会自己暴露（本地跑不到它），只能靠这条检查守。
+  //
+  // 只查非注释行。这条检查第一版连注释一起扫，结果命中了本文件里
+  // 「曾硬编码预算 200 KB」这句说明本身而误报 —— 同一个「判据命中文档」的坑，
+  // 本项目已经踩到第四次。凡是拿字面量做判据，必须先把注释排除掉。
+  const codeLines = text.split('\n')
+    .filter((l) => !/^\s*#/.test(l))                       // YAML / shell 注释
+    .filter((l) => !/^\s*\/\//.test(l))                   // 行首 //
+    .join('\n');
+  const budgetLiterals = [...codeLines.matchAll(/预算\s*(\d+)\s*KB/g)].map((m) => m[1]);
+  ok(`${f} 不硬编码体积预算（改用 package.json 的 sizeBudgetKB）`,
+    budgetLiterals.length === 0, budgetLiterals.map((n) => `预算 ${n} KB`).join(', '));
 }
 
 console.log(failed ? `\n${failed} 项失败\n` : '\n工作流校验通过\n');

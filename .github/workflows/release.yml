@@ -52,11 +52,15 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      # 发布 job 只做校验和、Release 与来源证明，不再跑 node；浅克隆 tag 快照即可。
+      # 发布 job 只做校验和、Release 与来源证明，不跑门禁；浅克隆 tag 快照即可。
+      # 仍需要 node：发布说明里的「体积预算」从 package.json 读，不在 workflow 里写死。
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with:
           fetch-depth: 1
           persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: '22'
       - name: 生成校验和与发布说明
         run: |
           set -euo pipefail
@@ -78,7 +82,20 @@ jobs:
             printf -- '- 首次安装：[安装脚本](https://fastly.jsdelivr.net/gh/%s@%s/%s)\n' "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$FILE"
             printf -- '- 附件含 `.user.js` 与本版同名 `.sha256` 校验文件。\n'
             size_bytes="$(wc -c < "$FILE")"
-            printf -- '- 脚本体积：%s KB（预算 200 KB）\n' "$(awk -v b="$size_bytes" 'BEGIN{printf "%.1f", b/1024}')"
+            size_kb="$(awk -v b="$size_bytes" 'BEGIN{printf "%.1f", b/1024}')"
+            # 预算从 package.json 读，不要在 workflow 里写死数字。
+            # 这里曾硬编码「预算 200 KB」，而实际预算是 270 —— 于是 Release 说明写着
+            # 「脚本体积：264.5 KB（预算 200 KB）」，看起来像发版超了自身上限，
+            # 每一版都在给读者释放错误信号。体积预算只有 package.json 一个来源。
+            budget_kb="$(node -p "require('./package.json').sizeBudgetKB || 0" 2>/dev/null || echo 0)"
+            case "$budget_kb" in
+              ''|*[!0-9]*) budget_kb=0 ;;
+            esac
+            if [ "$budget_kb" -gt 0 ]; then
+              printf -- '- 脚本体积：%s KB（预算 %s KB）\n' "$size_kb" "$budget_kb"
+            else
+              printf -- '- 脚本体积：%s KB\n' "$size_kb"
+            fi
             printf -- '- 校验和：`%s`\n' "$(cut -d' ' -f1 "$FILE.sha256")"
           } > release-notes.md
 
