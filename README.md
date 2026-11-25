@@ -6,7 +6,7 @@
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![node](https://img.shields.io/badge/node-%E2%89%A522-3c873a)
 ![deps](https://img.shields.io/badge/dependencies-0-success)
-![tests](https://img.shields.io/badge/checks-227%20assertions-success)
+![tests](https://img.shields.io/badge/checks-229%20assertions-success)
 
 单文件、无构建、无第三方依赖、无遥测。可在油猴里直接读完。
 

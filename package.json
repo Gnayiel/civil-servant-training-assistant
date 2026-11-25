@@ -7,6 +7,8 @@
   "engines": {
     "node": ">=22"
   },
+  "//sizeBudgetKB": "单文件脚本的体积上限。拦住「无意间塞进大段内联数据」，不是越小越好。selftest 与 release 都读这里，避免两份数字漂移。",
+  "sizeBudgetKB": 270,
   "scripts": {
     "test": "node tests/selftest.mjs && node tools/check-data.mjs && node tests/merge-smoke.mjs",
     "check": "node tools/check-syntax.mjs && node tools/check-docs.mjs && node tests/selftest.mjs && node tools/check-data.mjs && node tests/merge-smoke.mjs && node tools/check-workflows.mjs",

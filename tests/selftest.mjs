@@ -100,12 +100,18 @@ ok('VERSION 兜底值与 @version 一致', !!fallback && fallback[1] === one('ve
 // ------------------------------------------------------------------ 体积
 console.log('\n[2/4] 体积与安全基线');
 const bytes = statSync(SCRIPT).size;
-// 270 KB：加入百度/AI 双通道答案引擎后体积上涨（引擎本身约 50 KB），
-// 之后历次加固（答案映射、对账闸门、题干守卫、文本清洗）又陆续增加了几 KB。
-// 这个上限的作用是「防止无意间塞进大段内联数据」，不是越小越好 ——
-// 它拦住的是「有人粘了 100 KB 的题库 JSON 进来」这类事故，不是正常增长。
-const BUDGET = 270 * 1024;
+// 体积预算读 package.json 的 sizeBudgetKB —— 单一来源。
+// 以前这里和 tools/release.mjs 各写一份 260，改一处另一处就漏，发版前才炸。
+const PKG_FOR_BUDGET = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+const BUDGET = (PKG_FOR_BUDGET.sizeBudgetKB || 270) * 1024;
 ok(`脚本 ${(bytes / 1024).toFixed(1)} KB 在 ${BUDGET / 1024} KB 预算内`, bytes < BUDGET);
+// 预算必须只有一个来源。曾同时硬编码在 selftest 与 release.mjs，改一处另一处就漏，
+// 表现为「门禁全绿、发版预检失败」。这两条断言守住「都从 package.json 读」。
+const releaseSrc = readFileSync(join(ROOT, 'tools', 'release.mjs'), 'utf8');
+ok('release.mjs 不再硬编码体积预算',
+  !/SIZE_BUDGET\s*=\s*\d+\s*\*\s*1024/.test(releaseSrc), '仍有硬编码');
+ok('release.mjs 读 package.json 的 sizeBudgetKB',
+  /sizeBudgetKB/.test(releaseSrc), '未读到字段');
 ok('未使用 eval', !/\beval\s*\(/.test(code));
 ok('未使用 new Function', !/new\s+Function\s*\(/.test(code));
 ok('未使用 document.write', !/document\.write\s*\(/.test(code));
