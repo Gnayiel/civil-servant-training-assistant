@@ -92,7 +92,7 @@
 
 两层机制，互补：
 
-- **油猴自带的更新检查**：读 `@updateURL`。指向 jsDelivr 而不是 `raw.githubusercontent.com`，因为后者在中国大陆经常不可达——用它做更新地址时版本检查会静默失败，永远收不到新版本。
+- **油猴自带的更新检查**：读 `@updateURL`。指向 GitHub 的 `releases/latest/download/…`，随新 Release 立即改指向；真正的下载走 `@downloadURL` 的 jsDelivr 固定 tag，见下表。
 
   两个地址分工不同，都不能用 CDN 的分支指针：
 
