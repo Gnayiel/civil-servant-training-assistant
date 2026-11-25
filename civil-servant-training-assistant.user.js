@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.3.14
+// @version      1.3.15
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
 // @match        https://gwypx.gsdj.gov.cn/*
 // @match        http://gwypx.gsdj.gov.cn/*
-// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@v1.3.14/civil-servant-training-assistant.user.js
+// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@v1.3.15/civil-servant-training-assistant.user.js
 // @updateURL    https://github.com/Gnayiel/civil-servant-training-assistant/releases/latest/download/civil-servant-training-assistant.user.js
 // @run-at       document-idle
 // @grant        GM_setValue
@@ -33,7 +33,7 @@
 
   // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
   // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.14';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.15';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';
@@ -4049,6 +4049,13 @@
     extractAIAnswer,
     clipQuery,
     stripQueryEcho,
+    removeFlatFragments,
+    flattenText,
+    csvCell,
+    bankToCsv,
+    stripHtml,
+    decodeEntities,
+    clipQuery,
     followPageRelevant,
     isLetterAnswer,
     lettersOf,
@@ -4167,6 +4174,31 @@
       eq('字母判定：接受 A、B 写法', isLetterAnswer('A、B'), true);
       eq('字母判定：中文不算字母答案', isLetterAnswer('答案'), false);
       eq('字母提取只保留 A-Z', lettersOf('a、b，c'), 'ABC');
+
+      // ---------- 文本清洗链（搜索页 → 纯文本） ----------
+      // 守两件事：「别把答案一起删掉」与「别把查询词回显留给答案抽取」。
+      // removeFlatFragments 用 8 字窗口 + 步长 4 匹配，窗口覆盖不到的尾部会残留几字，
+      // 但实测不影响答案提取（答案在另一句里，残留只会让单选更保守地拒答）。
+      eq('清洗：查询词回显被删除',
+        /正确答案/.test(stripQueryEcho('题目：甲 正确答案 答案：A', ['甲 正确答案'])), false);
+      eq('清洗：答案句本身被保留',
+        stripQueryEcho('标准答案：社会建设。题干是甲的题目内容',
+          ['甲的题目内容 正确答案']).includes('社会建设'), true);
+      eq('清洗：短查询词（<6字）不参与片段删除',
+        stripQueryEcho('正确答案是 A', ['正确答案']), '正确答案是 A');
+      eq('截断：短题干不截断', clipQuery('简述题'), '简述题');
+      eq('截断：超长时保留头 40 + 尾 20',
+        clipQuery('甲'.repeat(100)).length, 40 + 1 + 20);
+      eq('截断：尾部限定词被保留',
+        clipQuery('乙'.repeat(50) + '以上说法正确的是').endsWith('以上说法正确的是'), true);
+      eq('实体解码：单遍，不二次解码', decodeEntities('&amp;lt;b&amp;gt;'), '&lt;b&gt;');
+      eq('CSV：引号内含逗号不被拆列',
+        parseCsv('a,"b,c",d')[0].join('|'), 'a|b,c|d');
+      eq('CSV：引号双写还原为一个引号',
+        parseCsv('"带""引号"""')[0][0], '带"引号"');
+      eq("CSV：等号开头被消毒", csvCell("=SUM(A1)"), "\u0022\u0027=SUM(A1)\u0022");
+      eq("CSV：加号开头也被消毒", csvCell("+86"), "\u0022\u0027+86\u0022");
+      eq('CSV：普通值原样加引号', csvCell('普通'), '"普通"');
 
       const ai = (raw, type = 'single') => extractAIAnswer(raw, O4, type);
       eq('AI 结构化：JSON 直取', ai('{"answer":"B","confidence":0.9}').letters, 'B');
