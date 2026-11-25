@@ -2,11 +2,11 @@
 
 面向各地「公务员网络培训」平台的 Tampermonkey 用户脚本：自动作答试卷、解除「切窗口就暂停」的播放限制、本地题库积累与导入导出。
 
-![version](https://img.shields.io/badge/version-1.3.17-2b5fd9)
+![version](https://img.shields.io/badge/version-1.3.18-2b5fd9)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![node](https://img.shields.io/badge/node-%E2%89%A522-3c873a)
 ![deps](https://img.shields.io/badge/dependencies-0-success)
-![tests](https://img.shields.io/badge/checks-230%20assertions-success)
+![tests](https://img.shields.io/badge/checks-234%20assertions-success)
 
 单文件、无构建、无第三方依赖、无遥测。可在油猴里直接读完。
 
@@ -19,7 +19,13 @@
 | 省份 | 状态 | 说明 |
 | --- | --- | --- |
 | 甘肃省 | 已适配 | `gwypx.gsdj.gov.cn`，题库 442 条 |
-| 其他省份 | 可扩展 | 同构平台改 `SITES` 一段即可；非已知域名会走 DOM 探测，多数情况无需改动 |
+| 其他省份 | 需自行改脚本 | **必须**在脚本头加该省份的 `@match`（否则脚本根本不会注入），结构差异再由 DOM 探测兜 |
+
+> **不要被「通用适配」误导**：脚本里确实有一套 DOM 探测（`FALLBACK_SITE` +
+> `looksLikePlatform()`），域名不在适配表时会靠它判断页面是不是培训平台。
+> 但**注入范围由 `@match` 决定**，默认只写了 `gwypx.gsdj.gov.cn` ——
+> 对其他任何站点，脚本压根不会运行，那套探测代码也永远不会执行。
+> 想在其他省份用，必须自己改脚本头的 `@match`（见下文步骤）。
 
 新增省份的方法见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，核心就是在 `SITES` 数组里加一项：
 
@@ -34,7 +40,16 @@
 }
 ```
 
-同时要在脚本头补该省份的 `@match` 与 `@connect`，否则脚本不会注入。
+**同时必须在脚本头补该省份的 `@match` 与 `@connect`**，否则脚本不会注入（这是硬门槛，
+不是可选项）：
+
+```js
+// @match        https://px.example.gov.cn/*
+// @connect      px.example.gov.cn
+```
+
+补充说明：`@connect` 只影响跨域请求。答题本身走页面同源请求，不加也能作答；
+但播放页的解锁逻辑与「检查更新」需要它。稳妥起见两个都加。
 
 ## 功能
 
@@ -174,7 +189,9 @@ tools/                                     检查、CI、题库同步、仓库�
 
 **面板没出现？** 确认脚本已启用、页面域名在 `SITES` 里（或页面结构能被识别）、且不是从 iframe 里打开的。
 
-**状态条显示「通用适配」？** 当前域名不在适配表内，脚本靠 DOM 探测在工作。若功能异常，用面板导出诊断包提 issue。
+**状态条显示「通用适配」？** 说明你已自行放宽了 `@match`，但域名不在 `SITES` 里，
+脚本正靠 DOM 探测工作。此时题目区结构若与甘肃不同，可能出现「题干读不出来」的提示
+（脚本会拒绝作答而不是瞎答）。功能异常时用面板导出诊断包提 issue。
 
 **某题显示「无可用答案」？** 该题不在内置题库里。自行作答即可，脚本不会替你猜。
 

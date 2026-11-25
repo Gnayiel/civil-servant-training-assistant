@@ -40,7 +40,9 @@ if (!OWNER) {
   const stale = [];
   for (const f of ['CHANGELOG.md', '.github/ISSUE_TEMPLATE/config.yml', 'package.json']) {
     const p = join(ROOT, f);
-    if (existsSync(p) && readFileSync(p, 'utf8').includes('OWNER')) stale.push(f);
+    // 与 tools/check-docs.mjs 同一判据：只看真实占位符 github.com/OWNER/。
+    // includes('OWNER') 会命中 .github/CODEOWNERS 文件名，也会命中 CHANGELOG 里提到它的句子。
+    if (existsSync(p) && /github\.com\/OWNER\//.test(readFileSync(p, 'utf8'))) stale.push(f);
   }
   const js = readFileSync(join(ROOT, 'civil-servant-training-assistant.user.js'), 'utf8');
   const hasUpdate = /@updateURL/.test(js);

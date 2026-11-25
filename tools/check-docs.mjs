@@ -33,7 +33,7 @@ function walk(dir, out = []) {
 }
 
 const docs = walk(ROOT);
-console.log(`\n[1/4] 共 ${docs.length} 份 Markdown`);
+console.log(`\n[1/5] 共 ${docs.length} 份 Markdown`);
 ok('包含 README.md', docs.some((p) => p.endsWith('/README.md')));
 ok('包含 LICENSE', existsSync(join(ROOT, 'LICENSE')));
 ok('包含 CHANGELOG.md', existsSync(join(ROOT, 'CHANGELOG.md')));
@@ -45,7 +45,7 @@ ok('包含 docs/DEVELOPMENT.md', existsSync(join(ROOT, 'docs', 'DEVELOPMENT.md')
 ok('包含 data/README.md', existsSync(join(ROOT, 'data', 'README.md')));
 
 // ------------------------------------------------------------------ 链接
-console.log('\n[2/4] 链接与围栏');
+console.log('\n[2/5] 链接与围栏');
 const brokenLinks = [];
 const oddFences = [];
 for (const file of docs) {
@@ -68,7 +68,7 @@ ok('所有相对链接都能解析', brokenLinks.length === 0, brokenLinks.slice
 ok('代码围栏成对', oddFences.length === 0, oddFences.join(' | '));
 
 // ------------------------------------------------------------------ 数字一致
-console.log('\n[3/4] 文档数字与数据一致');
+console.log('\n[3/5] 文档数字与数据一致');
 const readme = readFileSync(join(ROOT, 'README.md'), 'utf8');
 const seed = JSON.parse(readFileSync(join(ROOT, 'data', 'bank-seed.json'), 'utf8'));
 const uniq = JSON.parse(readFileSync(join(ROOT, 'data', 'questions-unique.json'), 'utf8'));
@@ -93,9 +93,13 @@ ok(`CHANGELOG 记录了 ${version}`, changelog.includes(version), version);
 const placeholder = [];
 for (const f of ['CHANGELOG.md', '.github/ISSUE_TEMPLATE/config.yml', 'package.json']) {
   const p = join(ROOT, f);
-  // 用 \bOWNER\b 而不是 includes('OWNER')：后者会命中 .github/CODEOWNERS 这个文件名，
-  // 于是每次 CI 都报一条「仓库地址仍是占位符」的假待办 —— 噪音会训练人忽略这条提示。
-  if (existsSync(p) && /\bOWNER\b/.test(readFileSync(p, 'utf8'))) placeholder.push(f);
+  // 只认真实占位符形态 github.com/OWNER/ —— 也就是 init-repo 会替换掉的那个串。
+  //
+  // 这条判断修过两次，记下教训：
+  //   1. 最初用 includes('OWNER')，命中了 .github/CODEOWNERS 文件名 → 假待办；
+  //   2. 改成单词边界匹配后又命中 CHANGELOG 里描述这次修复的句子本身 → 又假待办。
+  // 用「单词」做判据，永远会被文档里提到它的地方触发；判据必须是占位符本身。
+  if (existsSync(p) && /github\.com\/OWNER\//.test(readFileSync(p, 'utf8'))) placeholder.push(f);
 }
 const js = readFileSync(join(ROOT, 'civil-servant-training-assistant.user.js'), 'utf8');
 
@@ -103,7 +107,7 @@ const js = readFileSync(join(ROOT, 'civil-servant-training-assistant.user.js'), 
 // SECURITY.md 是读者判断「这脚本会不会把我的东西传出去」的依据，
 // 漏写一个目的地比写得啰嗦严重得多。曾经它就只写了「只在配置后请求 AI 接口」，
 // 而实际默认模式是把题干发给百度 —— 这类漂移必须机器查，靠人记不住。
-console.log('\n[4/4] 脚本声明的网络出口与 SECURITY.md 一致');
+console.log('\n[4/5] 脚本声明的网络出口与 SECURITY.md 一致');
 const securityDoc = readFileSync(join(ROOT, 'SECURITY.md'), 'utf8');
 const connectHosts = [...js.matchAll(/^\/\/\s*@connect\s+(\S+)/gm)].map((m) => m[1].trim());
 ok('脚本声明了 @connect', connectHosts.length > 0);
@@ -112,6 +116,48 @@ ok(`SECURITY.md 覆盖全部 ${connectHosts.length} 个 @connect 主机`,
   missingHosts.length === 0, missingHosts.join(', '));
 // 默认联不联网是最关键的一句：百度是默认模式，必须明说
 ok('SECURITY.md 点明百度是默认出口', /百度/.test(securityDoc) && /默认/.test(securityDoc));
+
+// ------------------------------------------------------------------ SITES 与 @match 对齐
+// 加一个省份要在两处同时登记：SITES 里的 hosts（决定选择器/路径），
+// 以及脚本头的 @match（决定脚本会不会被注入）。只加一处就是静默失效：
+// 面板永远不出现，用户以为脚本坏了，日志里连一行都没有 —— 因为压根没运行。
+// 这个坑没法靠人记，必须机器查。
+console.log('\n[5/5] SITES 里的域名都配了 @match 与 @connect');
+const matchHosts = [...js.matchAll(/^\/\/\s*@match\s+\S*?:\/\/([^/\s]+)/gm)].map((m) => m[1].trim());
+// SITES 里每个 hosts 数组的字符串字面量（注释掉的示例行会带 // 前缀，需要排除）
+const sitesHosts = [];
+for (const line of js.split('\n')) {
+  const trimmed = line.trim();
+  if (trimmed.startsWith('//')) continue;             // 跳过被注释掉的示例配置
+  for (const m of trimmed.matchAll(/hosts:\s*\[([^\]]*)\]/g)) {
+    for (const h of m[1].matchAll(/'([^']+)'/g)) {
+      if (h[1].trim()) sitesHosts.push(h[1].trim());
+    }
+  }
+}
+ok(`从 SITES 读到 ${sitesHosts.length} 个域名`, sitesHosts.length > 0);
+const noMatch = sitesHosts.filter((h) => !matchHosts.includes(h));
+ok('每个 SITES 域名都有对应的 @match（少了就不会注入）',
+  noMatch.length === 0, noMatch.join(', '));
+const noConnect = sitesHosts.filter((h) => !connectHosts.includes(h));
+ok('每个 SITES 域名都有对应的 @connect（少了跨域请求会被拦）',
+  noConnect.length === 0, noConnect.join(', '));
+// 反向也查一次：@match 写了但 SITES 里没有，会走通用适配 —— 不是错，但值得知道
+const extraMatch = matchHosts.filter((h) => !sitesHosts.includes(h));
+ok('没有多余的 @match 域名（多余的只会走通用探测）',
+  extraMatch.length === 0, extraMatch.join(', '));
+
+// 占位符检查的判据必须与 init-repo.mjs 一致，且不能退化成「匹配单词」——
+// 这个坑踩过两次（CODEOWNERS 文件名、CHANGELOG 里描述修复的句子）。
+// 只查**非注释行**：init-repo 的注释里就写着 includes('OWNER') 这个反面例子，
+// 连注释一起查会让这条断言自己误报 —— 又一个「判据命中文档」的同型错误。
+// 判据也不用「含 /OWNER/」这种子串匹配：源码里写的是正则字面量 \/OWNER\/，
+// 子串对不上。直接看那一行用的是 .test(正则) 还是 includes(裸词)。
+const initRepoLine = readFileSync(join(ROOT, 'tools', 'init-repo.mjs'), 'utf8')
+  .split('\n').find((l) => !l.trim().startsWith('//') && /stale\.push\(/.test(l)) || '';
+ok('init-repo.mjs 用正则判占位符，不用 includes 裸词',
+  /\.test\(/.test(initRepoLine) && !/includes\(/.test(initRepoLine),
+  initRepoLine.trim().slice(0, 70));
 const noUpdateUrl = !/@updateURL/.test(js);
 if (placeholder.length || noUpdateUrl) {
   console.log('\n待办（不阻断 CI）：');
