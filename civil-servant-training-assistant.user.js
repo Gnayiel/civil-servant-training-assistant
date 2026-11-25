@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.3.15
+// @version      1.3.16
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
 // @match        https://gwypx.gsdj.gov.cn/*
 // @match        http://gwypx.gsdj.gov.cn/*
-// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@v1.3.15/civil-servant-training-assistant.user.js
+// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@v1.3.16/civil-servant-training-assistant.user.js
 // @updateURL    https://github.com/Gnayiel/civil-servant-training-assistant/releases/latest/download/civil-servant-training-assistant.user.js
 // @run-at       document-idle
 // @grant        GM_setValue
@@ -33,7 +33,7 @@
 
   // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
   // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.15';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.16';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';
@@ -1471,13 +1471,26 @@
   }
 
   // ---------------------------------------------------------------- AI 通道
-  /** 解析 AI 的结构化回答：优先 JSON，兼容 ```json 代码块与前后解释文字 */
+  /**
+   * 解析 AI 的结构化回答：优先 JSON，兼容 ```json 代码块与前后解释文字。
+   *
+   * **多个候选时取置信度最高的，不能取第一个。** 模型很爱在给出正式答案前先写一个格式示例：
+   *     格式示例：{"answer":"A","confidence":0.5}
+   *     正式答案：{"answer":"D","confidence":0.9}
+   * 旧的「解析成功就 return」会拿到示例里的 A —— 那不是答案，只是格式占位符，
+   * 而且置信度往往也低。实测：先低后高时选中 A(0.3)，先高后低时才选中 D(0.95)。
+   * 置信度相同时仍然取先出现的那个（模型通常把正式答案放在示例之后，但若两者
+   * 置信度相同就无法区分，此时保留「先到」更符合原文顺序）。
+   */
   function extractAIAnswer(content, options, type) {
     const raw = String(content || '').trim();
     const letters = options.map((o) => o.letter);
     if (!raw) return null;
     const bodies = [...raw.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((m) => m[1]);
     bodies.push(...jsonObjectCandidates(raw));
+
+    let best = null;
+    let bestConf = -1;
     for (const body of bodies) {
       let obj = null;
       try { obj = JSON.parse(String(body).trim()); } catch (e) { continue; }
@@ -1493,14 +1506,19 @@
       const rawConf = Number(obj.confidence);
       const conf = (obj.confidence !== undefined && obj.confidence !== null
         && Number.isFinite(rawConf) && rawConf >= 0 && rawConf <= 1) ? rawConf : 0.9;
-      const reason = obj.reason || obj['理由'] || '';
-      return {
-        letters: ans,
-        conf,
-        structured: true,
-        why: `AI 结构化${reason ? `：${String(reason).slice(0, 40)}` : ''}`,
-      };
+      // 严格大于才替换：并列时保留先出现的那个
+      if (conf > bestConf) {
+        const reason = obj.reason || obj['理由'] || '';
+        bestConf = conf;
+        best = {
+          letters: ans,
+          conf,
+          structured: true,
+          why: `AI 结构化${reason ? `：${String(reason).slice(0, 40)}` : ''}`,
+        };
+      }
     }
+    if (best) return best;
     // 不是 JSON → 退回文本抽取（兼容不支持 JSON 输出的接口）
     const fb = extractAnswer(raw, options, type);
     return fb ? { ...fb, structured: false, why: `${fb.why}（AI 文本兜底）` } : null;
@@ -4051,6 +4069,7 @@
     stripQueryEcho,
     removeFlatFragments,
     flattenText,
+    jsonObjectCandidates,
     csvCell,
     bankToCsv,
     stripHtml,
@@ -4204,6 +4223,20 @@
       eq('AI 结构化：JSON 直取', ai('{"answer":"B","confidence":0.9}').letters, 'B');
       eq('AI 结构化：代码块包着也认', ai('```json\n{"answer":"C","confidence":0.8}\n```').letters, 'C');
       eq('AI 结构化：显式 conf=0 不被抬成 0.9', ai('{"answer":"B","confidence":0}').conf, 0);
+
+      // 多个合法候选时取置信度最高的，不能取第一个。
+      // 模型常在正式答案前先写一个格式示例（answer=A, confidence=0.5），
+      // 旧的「解析成功就 return」会把示例里的字母当答案。
+      eq('AI 多候选：先低后高时取高',
+        ai('{"answer":"A","confidence":0.3} {"answer":"D","confidence":0.95}').letters, 'D');
+      eq('AI 多候选：先高后低时仍取高',
+        ai('{"answer":"D","confidence":0.95} {"answer":"A","confidence":0.3}').letters, 'D');
+      eq('AI 多候选：置信度并列时取先出现的',
+        ai('{"answer":"A","confidence":0.8} {"answer":"C","confidence":0.8}').letters, 'A');
+      eq('AI 多候选：示例无 confidence（默认 0.9）时不被低分示例盖过',
+        ai('{"answer":"A","confidence":0.2} {"answer":"B"}').letters, 'B');
+      eq('AI 多候选：非法候选被跳过、合法者胜出',
+        ai('{"answer":"Z"} {"answer":"C","confidence":0.6}').letters, 'C');
       eq('AI 结构化：单选给两个字母视为自相矛盾（不采信结构化）',
         (ai('{"answer":"AB","confidence":0.9}') || {}).structured, undefined);
       eq('AI 文本兜底：无 JSON 时按文本抽', ai('我认为答案是 C').letters, 'C');
