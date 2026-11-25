@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.3.13
+// @version      1.3.14
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
 // @match        https://gwypx.gsdj.gov.cn/*
 // @match        http://gwypx.gsdj.gov.cn/*
-// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@v1.3.13/civil-servant-training-assistant.user.js
+// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@v1.3.14/civil-servant-training-assistant.user.js
 // @updateURL    https://github.com/Gnayiel/civil-servant-training-assistant/releases/latest/download/civil-servant-training-assistant.user.js
 // @run-at       document-idle
 // @grant        GM_setValue
@@ -33,7 +33,7 @@
 
   // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
   // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.13';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.14';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';
@@ -1082,10 +1082,18 @@
     const KEYED = /(?:正确答案|参考答案|标准答案|正确选项|本题答案|答案|应选|选择|选项|判断|结论|选)[是为:：\]】）)］\s]*([A-Za-z](?:[\s,，、/和及与]*[A-Za-z])*)/;
     const keyed = s.match(KEYED);
     if (keyed) {
-      // 「正确答案：B，A项错误」的捕获串是「B，A」；末尾字母紧跟 项/个/条/题 时是干扰项描述
+      // 「正确答案：B，A项错误」的捕获串是「B，A」；末尾字母紧跟 项/个/条/题 时是干扰项描述。
+      //
+      // 但只有捕获到 ≥2 个字母时才需要裁 —— 「正确答案：C项」里的「项」是量词
+      // （C项 = C 选项），裁掉就把答案裁没了，整条会掉到兜底的「孤立字母」0.35。
+      // 实测这一类表述（C项 / 是 C 项 / C项。）会把 0.9 降到 0.35，
+      // 后果是每题多查一个来源、两源冲突时还会因把握低而被判为不可靠。
       let frag = keyed[1];
       const tail = s.slice(keyed.index + keyed[0].length).replace(/^\s+/, '');
-      if (/^[项个条题]/.test(tail)) frag = frag.replace(/[A-Za-z](?=[^A-Za-z]*$)/, '');
+      const fragLetters = (frag.match(/[A-Za-z]/g) || []).length;
+      if (fragLetters >= 2 && /^[项个条题]/.test(tail)) {
+        frag = frag.replace(/[A-Za-z](?=[^A-Za-z]*$)/, '');
+      }
       const kl = shapeKeyed(frag);
       if (kl) return { letters: kl, conf: 0.9, why: '提示词+字母' };
     }
@@ -4135,6 +4143,20 @@
       eq('纯字母答案', ans('B'), 'B');
       eq('提示词后的字母', ans('正确答案：C'), 'C');
       eq('提示词后紧跟干扰项时不取干扰字母', ans('正确答案：B，A项错误'), 'B');
+      // 「C项」里的「项」是量词（= C 选项），不是干扰项描述。曾把这类表述裁成空，
+      // 整条掉到兜底的「孤立字母」0.35：答案本身对，但每题都要多查一个来源，
+      // 两源冲突时还会因把握低被判为不可靠。
+      eq('提示词+量词：C项 不被当成干扰项裁掉', ans('正确答案：C项'), 'C');
+      eq('提示词+量词：答案带量词时置信度仍为高',
+        extractAnswer('正确答案：C项', O4, 'single').conf, 0.9);
+      eq('提示词+量词：是 C 项', ans('正确答案是 C 项'), 'C');
+      eq('提示词+量词：C项。', ans('正确答案：C项。'), 'C');
+      eq('提示词+量词：【答案】C项', ans('【答案】C项'), 'C');
+      eq('提示词+量词：故选C项', ans('故选C项'), 'C');
+      // 反过来仍要挡住真干扰项：多字母命中时，末尾字母紧跟量词就是干扰项
+      eq('多字母+量词：仍裁掉末尾干扰字母', ans('正确答案：B，A项错误，C项错误'), 'B');
+      eq('多字母+量词：答案带量词、干扰项在后', ans('本题答案：D项，A、B、C三项均错误'), 'D');
+      eq('多字母+量词：不是A项', ans('正确答案是B项，不是A项'), 'B');
       eq('括号字母', ans('（D）'), 'D');
       eq('裸字母：句首带选项原文', ans('A. 社会建设'), 'A');
       eq('英文句子里不误取首字母', ans('The answer is B'), 'B');
