@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.3.12
+// @version      1.3.13
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
 // @match        https://gwypx.gsdj.gov.cn/*
 // @match        http://gwypx.gsdj.gov.cn/*
-// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@v1.3.12/civil-servant-training-assistant.user.js
+// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@v1.3.13/civil-servant-training-assistant.user.js
 // @updateURL    https://github.com/Gnayiel/civil-servant-training-assistant/releases/latest/download/civil-servant-training-assistant.user.js
 // @run-at       document-idle
 // @grant        GM_setValue
@@ -33,7 +33,7 @@
 
   // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
   // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.12';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.13';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';
@@ -58,7 +58,6 @@
     aiUrl: '',
     aiModel: '',
     aiKey: '',
-    netTimeoutMs: 12000,
 
     // ---------- 请求 ----------
     baiduTimeout: 8000,        // 百度单请求超时
@@ -239,22 +238,6 @@
   }
 
   // 按优先级取第一个可见匹配
-  function pick(selectors, root = document) {
-    const list = Array.isArray(selectors) ? selectors : [selectors];
-    for (const s of list) {
-      let nodes;
-      try {
-        nodes = root.querySelectorAll(s);
-      } catch (e) {
-        continue;
-      }
-      for (const n of nodes) {
-        if (n && (n.offsetParent !== null || n.getClientRects().length)) return n;
-      }
-    }
-    return null;
-  }
-
   function textOf(el) {
     return el ? el.textContent.replace(/\s+/g, ' ').trim() : '';
   }
@@ -624,8 +607,20 @@
    *       h2 三、判断题
    *       div.shiti_l > dl.danxuan + div.xuxiang
    */
-  function parseExam() {
+  /**
+   * 题干归一化后至少要有这么长才算「读到了题」。
+   *
+   * 为什么不只看「原始文本非空」：页面上的 dt 哪怕只含题号（`<dt><span>1.</span>…`），
+   * textOf 也会给出 "1." 这种真值字符串，而 pureStem 会把序号剥掉、结果是空串。
+   * 于是「题干选择器失配」的页面能一路通过校验 —— 实测会拿空题干去搜「正确答案」，
+   * 把搜到的无关答案当成这道题的答案，还显示「已答 5/5」。宁可不答也不能瞎答。
+   */
+  const MIN_STEM_LEN = 4;
+
+  /** 解析试卷，同时报告有多少题因为题干读不出来被丢弃 */
+  function parseExamDetailed() {
     const out = [];
+    let dropped = 0;
     const blocks = document.querySelectorAll(SEL.typeBlock);
     blocks.forEach((block) => {
       const h2 = block.querySelector(SEL.typeTitle);
@@ -655,14 +650,23 @@
       pairs.forEach(({ dl, box }) => {
         const q = parseQuestion(dl, box, groupType);
         if (q) out.push(q);
+        else if (box && box.querySelector(SEL.choiceInput)) dropped += 1;
       });
     });
-    return out;
+    return { questions: out, dropped };
+  }
+
+  /** 只要题目列表的轻量包装（诊断、对账等只关心题目本身的场景用它） */
+  function parseExam() {
+    return parseExamDetailed().questions;
   }
 
   function parseQuestion(dl, box, groupType) {
     const stemRaw = textOf(dl.querySelector(SEL.stemDt));
     if (!stemRaw) return null;
+    // 归一化后再判长度：只含题号的 dt（"1."）会在这里被挡下，
+    // 不能让空题干流到联网环节 —— 那等于用「正确答案」三个字去搜一个答案回来。
+    if (pureStem(stemRaw).length < MIN_STEM_LEN) return null;
 
     const inputs = Array.from(box.querySelectorAll(SEL.choiceInput));
     if (!inputs.length) return null;
@@ -1919,10 +1923,19 @@
       log('已请求停止作答');
       return;
     }
-    const questions = parseExam();
+    const parsed = parseExamDetailed();
+    const questions = parsed.questions;
     if (!questions.length) {
-      log('未解析到题目，可能不是试卷页');
+      log(parsed.dropped
+        ? `页面上有 ${parsed.dropped} 道题，但题干全部读不出来（题目区结构与预期不符）`
+        : '未解析到题目，可能不是试卷页', 'warn');
       return;
+    }
+    if (parsed.dropped) {
+      // 部分题读不出题干：不能默默少答几题。多半是页面结构变了，
+      // 少答的题计入未定，并由下面的 unsupported 逻辑禁用自动交卷。
+      log(`有 ${parsed.dropped} 道题的题干读不出来，已跳过；`
+        + '若整卷都这样，说明该站点的题目结构与预期不同', 'warn');
     }
     examRunning = true;
     examAbort = false;
@@ -1946,10 +1959,14 @@
       + '.shiti textarea, .shiti input[type="text"]').forEach((el) => blankSeen.add(el));
     const blankCount = blankSeen.size;
     const boxTotal = document.querySelectorAll(SEL.optionBox).length;
-    const unsupported = blankCount > 0 || boxTotal > questions.length;
+    // dropped > 0 也算「题型/结构不支持」：题干都读不出来的题不能算已支持，
+    // 否则会出现「少答了 N 题、却照样自动交卷」的情况。
+    const unsupported = blankCount > 0 || boxTotal > questions.length || parsed.dropped > 0;
     if (unsupported) {
-      log(`页面有 ${boxTotal} 个作答区、${blankCount} 个文本作答框，` +
-        `只解析出 ${questions.length} 题；存在不支持的题型，已禁用自动交卷`, 'warn');
+      log(`页面有 ${boxTotal} 个作答区、${blankCount} 个文本作答框，`
+        + `只解析出 ${questions.length} 题`
+        + `${parsed.dropped ? `（另有 ${parsed.dropped} 题题干读不出）` : ''}`
+        + '；存在不支持的题型或结构，已禁用自动交卷', 'warn');
     }
 
     log(`解析到 ${questions.length} 道题：` +
@@ -3995,6 +4012,8 @@
     parseCsv,
     resolveAnswer,
     parseExam,
+    parseExamDetailed,
+    MIN_STEM_LEN,
     applyAnswer,
     mergeBanks,
     buildDiagnostics,
@@ -4222,6 +4241,16 @@
       for (let i = 0; i < 5; i++) cacheStore(cm2, 'k' + i, { letters: 'A', conf: 1 }, i, 3);
       eq('缓存：超上限按先进先出淘汰', cm2.size, 3);
       eq('缓存：最旧的键被淘汰', cm2.has('k0'), false);
+
+      // ---------- 题干长度守卫 ----------
+      // 只含题号的 dt（"1."）在 pureStem 后是空串。旧实现只判 raw 非空，
+      // 于是空题干会流到联网环节：拿「正确答案」三个字搜回一个无关答案，
+      // 再经会话缓存套到所有题上，显示「已答 5/5」。这是最坏的一类失败——静默瞎答。
+      eq('题干：纯题号归一化后为空', pureStem('1.'), '');
+      eq('题干：纯题号短于阈值', pureStem('12、').length < MIN_STEM_LEN, true);
+      eq('题干：正常题干远超阈值', pureStem('新时代我国社会主要矛盾是（ ）。').length >= MIN_STEM_LEN, true);
+      eq('题干：剥掉题型与分值后仍够长',
+        pureStem('1. 党的十七大提出将社会建设纳入总体布局（单选题）（20分）').length >= MIN_STEM_LEN, true);
 
       // ---------- 节奏档位的生效值 ----------
       // 下限 220ms 会盖掉「快速」档配置的 150ms，面板文案必须显示生效值

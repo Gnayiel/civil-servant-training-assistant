@@ -164,6 +164,11 @@ setTimeout(function () {
     r.modeCnt = q('#fx-gb-mode');
   }
   var parsed = window.__GWX_TEST__ ? window.__GWX_TEST__.parseExam() : [];
+  // 正常页面上不该有任何题因为「题干读不出来」被丢弃
+  r.parseDropped = (function () {
+    if (!window.__GWX_TEST__ || !window.__GWX_TEST__.parseExamDetailed) return null;
+    return window.__GWX_TEST__.parseExamDetailed().dropped;
+  })();
   r.parsed = parsed.map(function (q) {
     return { qid: q.qid, type: q.type, stem: q.stem.slice(0, 30), n: q.options.length };
   });
@@ -371,6 +376,7 @@ ok('页面无 JS 报错', exam.errors.length === 0, exam.errors.join(' | '));
 ok('内置自检零失败', exam.selfTest && exam.selfTest.failed === 0,
   exam.selfTest ? `${exam.selfTest.failed}/${exam.selfTest.total}` : '未运行');
 ok('解析出 5 道题', exam.parsed.length === 5, String(exam.parsed.length));
+ok('正常页面没有题因题干读不出被丢弃', exam.parseDropped === 0, String(exam.parseDropped));
 ok('题型判定正确：单选 2 / 多选 1 / 判断 2',
   JSON.stringify(exam.parsed.map((q) => q.type)) === JSON.stringify(['single', 'single', 'multi', 'judge', 'judge']),
   exam.parsed.map((q) => q.type).join(','));
