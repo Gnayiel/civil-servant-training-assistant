@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.3.16
+// @version      1.3.17
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
 // @match        https://gwypx.gsdj.gov.cn/*
 // @match        http://gwypx.gsdj.gov.cn/*
-// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@v1.3.16/civil-servant-training-assistant.user.js
+// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@v1.3.17/civil-servant-training-assistant.user.js
 // @updateURL    https://github.com/Gnayiel/civil-servant-training-assistant/releases/latest/download/civil-servant-training-assistant.user.js
 // @run-at       document-idle
 // @grant        GM_setValue
@@ -33,7 +33,7 @@
 
   // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
   // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.16';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.17';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';
@@ -657,6 +657,24 @@
   }
 
   /** 只要题目列表的轻量包装（诊断、对账等只关心题目本身的场景用它） */
+  /**
+   * 答案集合的归一化键：用于判断「两份答案是不是同一组」。
+   *
+   * 按**文本**而不是字母：判断题题库存的是「对/错」，页面上却是 A/B 或 1/0，
+   * 拿字母比会把每道判断题都判成冲突（曾经就是这么错的）。
+   * 排序后拼接 → 与选项顺序无关。
+   *
+   * 抽成纯函数是为了能被自检直接验证：这段逻辑原先内联在 `reconcileAfterPass` 里，
+   * 测试只能照抄一遍再用 `A === A` 去断言，等于没测。
+   */
+  function answerKeyOf(list) {
+    return (Array.isArray(list) ? list : [])
+      .map((t) => normStem(t))
+      .filter(Boolean)
+      .sort()
+      .join('|');
+  }
+
   function parseExam() {
     return parseExamDetailed().questions;
   }
@@ -2236,8 +2254,8 @@
         // 页面上却是 value="1"/"0" 或 "A"/"B"，拿字母比会 100% 误判成冲突
         // （实测把两道判断题全报成争议）。文本不受题型与选项顺序影响，是唯一可靠的比较口径。
         if (!userEdited && old && (old.a || []).length) {
-          const oldSet = (old.a || []).map((t) => normStem(t)).filter(Boolean).sort().join('|');
-          const newSet = (it.picked || []).map((t) => normStem(t)).filter(Boolean).sort().join('|');
+          const oldSet = answerKeyOf(old.a);
+          const newSet = answerKeyOf(it.picked);
           if (oldSet && newSet && oldSet !== newSet) {
             conflicts++;
             try {
@@ -4060,6 +4078,7 @@
     sourceBlocked,
     resetSourceBreaker,
     clampPanelPos,
+    answerKeyOf,
     effectiveDelay,
     extractAnswer,
     normalizeAnswer,
@@ -4304,14 +4323,19 @@
           { letter: 'A', text: '甲' }, { letter: 'B', text: '乙' },
         ] }, { a: [], l: ['A', 'C'] }), null);
 
-      // 冲突比对必须按文本：判断题题库存「对/错」，页面是 A/B 或 1/0
-      const setOf = (arr) => (arr || []).map((t) => normStem(t)).filter(Boolean).sort().join('|');
-      eq('冲突比对：判断题「对」与页面 A/B 不因字母不同而误判',
-        setOf(['对']) === setOf(['对']), true);
-      eq('冲突比对：同一答案不同顺序视为一致',
-        setOf(['甲', '乙']) === setOf(['乙', '甲']), true);
-      eq('冲突比对：确实不同的答案能识别',
-        setOf(['甲']) === setOf(['乙']), false);
+      // 冲突比对按文本、不按字母：判断题题库存「对/错」，页面是 A/B 或 1/0。
+      // 这里直接断言归一化键的**具体值**，而不是拿同一个表达式跟它自己比 ——
+      // 后者（`f(x) === f(x)`）永远不会失败，等于没测。
+      eq('冲突比对：判断题「对」的键就是「对」', answerKeyOf(['对']), '对');
+      eq('冲突比对：判断题「错」的键就是「错」', answerKeyOf(['错']), '错');
+      eq('冲突比对：顺序无关', answerKeyOf(['甲', '乙']), answerKeyOf(['乙', '甲']));
+      eq('冲突比对：顺序无关（键值固定）', answerKeyOf(['甲', '乙']), '乙|甲');
+      eq('冲突比对：确实不同的答案键也不同',
+        answerKeyOf(['甲']) === answerKeyOf(['乙']), false);
+      eq('冲突比对：空答案得空键', answerKeyOf([]), '');
+      eq('冲突比对：全是空白的答案得空键', answerKeyOf([' ', '']), '');
+      eq('冲突比对：标点差异被归一掉',
+        answerKeyOf(['社会建设。']), answerKeyOf(['社会建设']));
 
       // ---------- 会话答案缓存 ----------
       const ck = answerCacheKey('新时代主要矛盾是什么', 'single', O4);
