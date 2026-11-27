@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.3.22
+// @version      1.3.23
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
 // @match        https://gwypx.gsdj.gov.cn/*
 // @match        http://gwypx.gsdj.gov.cn/*
-// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@v1.3.22/civil-servant-training-assistant.user.js
+// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@v1.3.23/civil-servant-training-assistant.user.js
 // @updateURL    https://github.com/Gnayiel/civil-servant-training-assistant/releases/latest/download/civil-servant-training-assistant.user.js
 // @run-at       document-idle
 // @grant        GM_setValue
@@ -33,7 +33,7 @@
 
   // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
   // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.22';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.23';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';
@@ -2527,6 +2527,7 @@
      * 播放器上的 pause 监听本来就有 dataset 标记守着，只有这两处漏了。
      */
     clickBound: false,
+    resumeBound: false,
     pollTimer: null,
 
     install() {
@@ -2592,21 +2593,30 @@
     },
 
     lastManualAt: 0,
+    manualPaused: false,   // 用户主动暂停过？切回本页时不该自动续播
 
     watchVideo() {
       const attach = () => {
         const v = document.querySelector('video');
         if (!v || v.dataset.gwxBound) return !!v;
         v.dataset.gwxBound = '1';
+        // 手动暂停要记住，不能靠「2 秒内点过控制条」这一条时间窗判断：
+        // 用户点了暂停、过一会儿切走再切回来，时间窗早过了，会被当成意外暂停而抢播。
+        v.addEventListener('play', () => { playerGuard.manualPaused = false; });
         v.addEventListener('pause', () => {
-          // 用户自己点暂停的不抢回来（2 秒内视为手动）
           if (!CONFIG.keepPlaying) return;
-          if (Date.now() - playerGuard.lastManualAt < 2000) return;
+          const manual = Date.now() - playerGuard.lastManualAt < 2000;
+          playerGuard.manualPaused = manual;
+          if (manual) return;
           setTimeout(() => {
-            if (v.paused && !document.hidden) {
-              v.play().catch(() => {});
-              log('检测到意外暂停，已恢复播放');
-            }
+            if (!v.paused || playerGuard.manualPaused) return;
+            // **不再判断 document.hidden**。
+            // 之前写成 `v.paused && !document.hidden`，意思是「标签页在后台就不恢复」——
+            // 可「多个标签页同时看」恰恰要求后台继续播，于是每次切走都被平台暂停、
+            // 切回来才由浏览器续上，用户看到的就是「自动暂停，得手动点播放」。
+            // 后台播放的自动播放限制由静音兜（muteForAutoplay 默认开）。
+            v.play().catch(() => {});
+            log(document.hidden ? '后台标签页被暂停，已恢复播放' : '检测到意外暂停，已恢复播放');
           }, 600);
         });
         v.play().catch(() => {});
@@ -2626,6 +2636,21 @@
       }
       // 记录用户主动操作控制条的时刻，避免与「自动恢复」互相打架。
       // 只装一次：applyLive() 会反复调到这里，重复挂监听纯属泄漏。
+      if (!this.resumeBound) {
+        this.resumeBound = true;
+        const resumeIfShould = (why) => {
+          if (!CONFIG.keepPlaying || !CONFIG.unlockBlur) return;
+          if (playerGuard.manualPaused) return;
+          const v = document.querySelector('video');
+          if (!v || !v.paused) return;
+          v.play().catch(() => {});
+          log(`切回本页，已自动续播（${why}）`);
+        };
+        document.addEventListener('visibilitychange', () => {
+          if (!document.hidden) resumeIfShould('可见');
+        });
+        window.addEventListener('focus', () => resumeIfShould('获得焦点'));
+      }
       if (!this.clickBound) {
         this.clickBound = true;
         document.addEventListener('click', (ev) => {

@@ -578,20 +578,55 @@ setTimeout(function () {
     return String(m).indexOf('视频将停止播放计时') >= 0;
   }).length === 0);
 
-  // 平台在 2 秒后调 myJwPlayer.play(false)，等它跑完再收结果
+  // 平台在 2 秒后调 myJwPlayer.play(false)，等它跑完再继续
   setTimeout(function () {
     r.pausedAfterBypass = (window.__paused || []).slice();
     // 顺手复查上面渲染的提示层是否已被定时器收掉（1 秒 tick 早就跑过了）
     r.popupLeftOnScreen = !!document.getElementById('leavePopup');
     r.bodyAlive = !!(document.body && document.getElementById('__r'));
-    r.errors = window.__pageErrors;
-    document.getElementById('__r').textContent = JSON.stringify(r);
+
+    // ---- 续播行为 ----
+    var v2 = document.querySelector('video');
+    var finish = function () {
+      r.errors = window.__pageErrors;
+      document.getElementById('__r').textContent = JSON.stringify(r);
+    };
+    if (!v2) { r.resumeChecked = 'no-video'; finish(); return; }
+
+    // ① 意外暂停（无手动痕迹）→ 应自动恢复。
+    // 刻意把 document.hidden 强制为 true：真实场景就是「在后台标签页被平台暂停」，
+    // 若哪天有人把「document.hidden 就不恢复」这个条件加回来，这条断言才会真的红。
+    var oldHidden = Object.getOwnPropertyDescriptor(document, 'hidden');
+    try {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: function () { return true; } });
+    } catch (e) { /* 忽略 */ }
+    v2.play().catch(function () {});
+    setTimeout(function () {
+      v2.pause();
+      setTimeout(function () {
+        r.autoResumed = (v2.paused === false);
+        r.hiddenDuringTest = document.hidden;
+
+        // ② 手动暂停（先点控制条留下手动痕迹）→ 不该被抢播
+        v2.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        if (v2.paused) { /* 已暂停就不用再 pause */ } else { v2.pause(); }
+        setTimeout(function () {
+          r.manualStayedPaused = (v2.paused === true);
+          // 还原 document.hidden，免影响后续断言
+          try {
+            if (oldHidden) Object.defineProperty(document, 'hidden', oldHidden);
+            else delete document.hidden;
+          } catch (e) { /* 忽略 */ }
+          finish();
+        }, 900);
+      }, 900);
+    }, 200);
   }, 2300);
 }, 2500);
 `;
 
 // 放在与真实地址相同的路径层级，让 isPlayerPage() 的路径判定真正被测到
-const player = run(build('player.html', playerProbe, 9000), 9000, 'gansu-spcrm/videoPlayGJ');
+const player = run(build('player.html', playerProbe, 13000), 13000, 'gansu-spcrm/videoPlayGJ');
 ok('页面无 JS 报错', player.errors.length === 0, player.errors.join(' | '));
 ok('window.onblur 已被清空', player.onblurIsNull === true);
 ok('已挂在页面上的「停止计时」提示被定时器自动收掉',
@@ -600,6 +635,12 @@ ok('已挂在页面上的「停止计时」提示被定时器自动收掉',
 // 护栏：清理弹窗绝不能把 body 一起摘掉（那会让整页空白，比弹窗严重得多）
 ok('清理弹窗后文档主体仍在',
   player.bodyAlive === true, String(player.bodyAlive));
+// 续播：这是「多个标签页同时看」的核心 —— 被平台暂停后必须自己接着播
+ok('意外暂停会自动恢复播放（后台标签页也一样）',
+  player.autoResumed === true && player.hiddenDuringTest === true,
+  `恢复=${player.autoResumed} 测试期hidden=${player.hiddenDuringTest}`);
+ok('手动暂停不被抢播',
+  player.manualStayedPaused === true, String(player.manualStayedPaused));
 ok('派发 blur 后平台 handler 零次触发', player.afterDispatch === player.before,
   `${player.before} -> ${player.afterDispatch}`);
 ok('事后注册的 blur 监听同样被拦截', player.lateFired === 0, String(player.lateFired));
