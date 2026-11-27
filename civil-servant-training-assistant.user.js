@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.3.20
+// @version      1.3.21
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
 // @match        https://gwypx.gsdj.gov.cn/*
 // @match        http://gwypx.gsdj.gov.cn/*
-// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@v1.3.20/civil-servant-training-assistant.user.js
+// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@v1.3.21/civil-servant-training-assistant.user.js
 // @updateURL    https://github.com/Gnayiel/civil-servant-training-assistant/releases/latest/download/civil-servant-training-assistant.user.js
 // @run-at       document-idle
 // @grant        GM_setValue
@@ -33,7 +33,7 @@
 
   // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
   // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.20';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.21';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';
@@ -2365,8 +2365,20 @@
   function startOnblurSuppression() {
     if (blurSuppressTimer) return;
     suppressPageOnblur();
-    // 1 秒一次足够：平台的注册时机都在页面初始化阶段，远快于这个粒度
-    blurSuppressTimer = setInterval(suppressPageOnblur, 1000);
+    // 1 秒一次足够：平台的注册时机都在页面初始化阶段，远快于这个粒度。
+    // 同一个 tick 里顺带做两件相关的事：
+    //   · keepPatched：页面整块替换 Showbo.Msg / myJwPlayer 时把桩补回去；
+    //   · dismissExistingLeavePopup：收掉脚本加载前就已弹出的那条提示。
+    // 弹窗只可能在页面刚打开这段时间出现，所以只在开局 20 秒内扫；
+    // 之后完全停下，不长期占用 CPU。
+    const startedAt = Date.now();
+    blurSuppressTimer = setInterval(() => {
+      suppressPageOnblur();
+      try { keepPatched(); } catch (e) { /* 忽略 */ }
+      if (Date.now() - startedAt < 20000) {
+        try { dismissExistingLeavePopup(); } catch (e) { /* 忽略 */ }
+      }
+    }, 1000);
   }
 
   function stopOnblurSuppression() {
@@ -2401,8 +2413,84 @@
     }, 500);
   }
 
+  /**
+   * 页面可能在脚本之后整块替换 Showbo.Msg / myJwPlayer（videoPlayGJ.js 在 body 末尾加载），
+   * 那样打过的桩会被丢掉。每个 tick 检查一次，被换掉就重打；开销是一次属性比较。
+   */
+  function keepPatched() {
+    if (!CONFIG.unlockBlur) return;
+    if (leaveAlertPatched && window.Showbo && window.Showbo.Msg
+      && window.Showbo.Msg.alert !== patchedAlert) {
+      leaveAlertPatched = false;
+    }
+    if (jwPatched && window.myJwPlayer && typeof window.myJwPlayer.play === 'function'
+      && window.myJwPlayer.play !== patchedPlay) {
+      jwPatched = false;
+    }
+    if (!leaveAlertPatched) suppressLeaveAlert();
+    if (!jwPatched) ignoreLeavePause();
+  }
+
+  /**
+   * 收掉脚本加载**之前**就弹出的那条提示。
+   *
+   * 页面 head 里就挂了 window.onblur；加载过程中窗口失焦（切标签页、点别的窗口）时，
+   * 弹窗会在 document-idle 之前弹出，那时刻的桩还没装，弹窗就一直留在屏幕上。
+   * 只认「视频将停止播放计时」这句独有文案，向上找含确认按钮的容器再点，
+   * 不会误关平台别的弹窗（如「毕业条件」）。
+   */
+  const LEAVE_PHRASE = '视频将停止播放计时';
+  function dismissExistingLeavePopup() {
+    if (!CONFIG.unlockBlur) return false;
+    let boxes;
+    try {
+      // 只找真正承载可见内容的容器。
+      // **不能带 `body > *`**：那会把 <script> 也选进来，而弹窗函数的源码里就含这句文案，
+      // 于是最先命中的是脚本标签、往下走找不到确认按钮，清理永远失败（实测踩过）。
+      boxes = Array.from(document.querySelectorAll('div, section, li, td, p')).filter((el) => {
+        if (/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/i.test(el.tagName)) return false;
+        const t = el.textContent || '';
+        if (t.indexOf(LEAVE_PHRASE) < 0) return false;
+        // 取最内层：子元素里还有同样文案就继续往下，避免锁到外层大容器
+        return !Array.from(el.children).some((c) => (c.textContent || '').indexOf(LEAVE_PHRASE) >= 0);
+      });
+    } catch (e) { return false; }
+    for (const el of boxes) {
+      let box = el;
+      for (let up = 0; up < 6 && box; up++) {
+        let btn = null;
+        try {
+          btn = Array.from(box.querySelectorAll('button, a, input[type="button"], [role="button"]'))
+            .find((b) => /^(确认|确定|知道了|关闭|OK)$/i.test((b.textContent || b.value || '').trim()));
+        } catch (e) { /* 忽略 */ }
+        // 安全护栏：绝不能把 body/html 当成「弹层」摘掉。
+        // 一旦发生，整页会被清空 —— 比弹窗本身严重得多。
+        if (box === document.body || box === document.documentElement || box === document) {
+          return false;
+        }
+        if (btn) {
+          const container = box;
+          try { btn.click(); } catch (e) { /* 忽略 */ }
+          // 点完复查：有些实现把关闭逻辑绑在别处，点按钮不一定真的移除，
+          // 那就直接摘掉这个弹层（文案是平台独有那句，误删风险很低）。
+          const isRoot = container === document.body || container === document.documentElement
+            || container === document;
+          if (!isRoot && container.isConnected
+            && (container.textContent || '').indexOf(LEAVE_PHRASE) >= 0) {
+            try { container.remove(); } catch (e) { /* 忽略 */ }
+          }
+          log('已关闭脚本加载前弹出的「切窗口停止计时」提示', 'ok');
+          return true;
+        }
+        box = box.parentElement;
+      }
+    }
+    return false;
+  }
+
   /** 吞掉「视频将停止播放计时」那条提示；其它提示（如「毕业条件」）一律放行 */
   let leaveAlertPatched = false;
+  let patchedAlert = null;      // 打过桩的那个函数，用于识别「被页面换回去了」
   function suppressLeaveAlert() {
     if (leaveAlertPatched) return;
     waitFor(() => (window.Showbo && window.Showbo.Msg
@@ -2410,7 +2498,7 @@
       if (leaveAlertPatched) return;
       leaveAlertPatched = true;
       const rawAlert = Msg.alert.bind(Msg);
-      Msg.alert = function (msg) {
+      patchedAlert = function (msg) {
         const text = String(msg == null ? '' : msg);
         if (CONFIG.unlockBlur && /视频将停止播放计时/.test(text)) {
           // 这条提示是 isLeaveOrEnter 的第一步，用它当「刚刚失焦」的信号：
@@ -2421,15 +2509,14 @@
         }
         return rawAlert(msg);
       };
+      Msg.alert = patchedAlert;
     });
   }
 
-  /**
-   * 失焦后 3 秒内的 myJwPlayer.play(false) 不执行。
-   * 平台固定「失焦 → 等 2 秒 → play(false)」，这个窗口能精确覆盖它，
-   * 又不会误伤正常结束时的停止（那时离上次失焦早已超过 3 秒）。
-   */
+  /** 失焦后 3 秒内的 myJwPlayer.play(false) 不执行。
+   *  平台固定「失焦 → 等 2 秒 → play(false)」；窗口外（如正常结束）照常执行。 */
   let jwPatched = false;
+  let patchedPlay = null;       // 同上
   function ignoreLeavePause() {
     if (jwPatched) return;
     waitFor(() => (window.myJwPlayer && typeof window.myJwPlayer.play === 'function'
@@ -2437,12 +2524,13 @@
       if (jwPatched) return;
       jwPatched = true;
       const rawPlay = jw.play.bind(jw);
-      jw.play = function (arg) {
+      patchedPlay = function (arg) {
         if (CONFIG.unlockBlur && arg === false && Date.now() - lastFocusLossAt < 3000) {
           return undefined;
         }
         return rawPlay(arg);
       };
+      jw.play = patchedPlay;
     });
   }
 
@@ -2466,13 +2554,8 @@
       this.installed = true;
 
       if (CONFIG.unlockBlur) {
-        // 顺序很重要：**先钉死、再清空**。
-        // 先清空的话，"原始描述符"就变成 {value: null}，等用户关掉开关想恢复时
-        // 只能还原成 null —— 平台回调永远回不来，开关变成单向的。
-        // 钉死后 getter 本来就读到 null，那句显式清空只是兜底（万一宿主不让改属性）。
-        //
-        // 钉死的理由：播放器初始化、标签页被浏览器挂起后重新载入这类时序里，
-        // 页面会重新执行 window.onblur = isLeaveOrEnter。只清一次挡不住后来者。
+        // 顺序很重要：先压制、再清空。反过来会把「原回调」记成 null，
+        // 用户关掉开关后平台回调再也回不来，开关就成了单向的。
         syncOnblurSuppression();
         // 拦截后续通过 addEventListener 注册的 blur（捕获阶段先吃掉）。
         // 必须每次检查 CONFIG.unlockBlur：监听器装上就拿不下来，
@@ -2488,6 +2571,8 @@
         }, true);
         suppressLeaveAlert();
         ignoreLeavePause();
+        // 先收掉可能已经挂在屏幕上的那条提示（加载期失焦会提前弹）
+        try { dismissExistingLeavePopup(); } catch (e) { /* 忽略 */ }
         log('已解除失焦暂停（窗口切换不再中断播放）', 'ok');
       }
 
@@ -4057,6 +4142,21 @@
         }
       })(),
       counts: { bank: bankCount(), clearedAt: bankClearedAt },
+      // 失焦防护各层的实际状态。缺少这几项时，出问题只能靠猜：
+      // 「弹窗还在」到底是桩没装上、还是被页面换掉了、还是弹窗早于脚本出现。
+      guard: {
+        onblurIsNull: window.onblur === null,
+        showboPresent: !!(window.Showbo && window.Showbo.Msg),
+        showboPatched: !!(window.Showbo && window.Showbo.Msg
+          && window.Showbo.Msg.alert === patchedAlert),
+        jwPresent: !!(window.myJwPlayer && typeof window.myJwPlayer.play === 'function'),
+        jwPatched: !!(window.myJwPlayer && window.myJwPlayer.play === patchedPlay),
+        leavePopupOnScreen: (function () {
+          try {
+            return document.body.textContent.indexOf(LEAVE_PHRASE) >= 0;
+          } catch (e) { return 'unknown'; }
+        })(),
+      },
       config: {
         autoAnswer: CONFIG.autoAnswer,
         autoSubmit: CONFIG.autoSubmit,
@@ -4214,6 +4314,7 @@
     resetSourceBreaker,
     clampPanelPos,
     answerKeyOf,
+    dismissExistingLeavePopup,
     effectiveDelay,
     extractAnswer,
     normalizeAnswer,

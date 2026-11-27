@@ -17,6 +17,19 @@
   window.__isLeaveOrEnter = isLeaveOrEnter;   // 给冒烟探针直接调用（模拟绕开事件拦截）
   window.Showbo = { Msg: { alert: function (m) { window.__alerts.push(m); } } };
   window.myJwPlayer = { play: function (x) { window.__paused.push(x); } };
+
+  // 复刻真实弹层：脚本注入之前就已经挂在页面上（加载期窗口失焦就会这样）。
+  // 单独用一个只渲染 DOM 的函数，不写 __alerts —— 免得和「运行期弹窗应被拦」的计数混在一起。
+  window.__renderLeavePopup = function () {
+    var box = document.createElement('div');
+    box.id = 'leavePopup';
+    box.innerHTML = '<div class="hdr">温馨提示</div>'
+      + '<div class="bd">如有下列行为之一，视频将停止播放计时：3、试图打开多个播放页面同时学习。</div>'
+      + '<div class="ft"><button id="leaveOk">确认</button></div>';
+    document.body.appendChild(box);
+    box.querySelector('#leaveOk').onclick = function () { box.remove(); };
+    return box;
+  };
 </script>
 </head>
 <body style="background:#333">

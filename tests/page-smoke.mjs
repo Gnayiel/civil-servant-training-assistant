@@ -480,6 +480,11 @@ console.log('\n[2/3] 播放页：失焦解锁');
 const playerProbe = `
 setTimeout(function () {
   var r = { at: Date.now() };
+  // 复刻「弹窗已经在页面上」：渲染一个平台样式的提示层，
+  // 等脚本的 1 秒定时器跑一轮，它必须被自动收掉（真实场景是加载期失焦先弹出来）。
+  if (typeof window.__renderLeavePopup === 'function') window.__renderLeavePopup();
+  r.popupRendered = !!document.getElementById('leavePopup');
+  // 不直接调用：必须由脚本自己的定时器收掉，才算接线正确
   r.onblurIsNull = (window.onblur === null);
   r.before = window.__blurCalls;
   window.dispatchEvent(new Event('blur'));
@@ -576,6 +581,9 @@ setTimeout(function () {
   // 平台在 2 秒后调 myJwPlayer.play(false)，等它跑完再收结果
   setTimeout(function () {
     r.pausedAfterBypass = (window.__paused || []).slice();
+    // 顺手复查上面渲染的提示层是否已被定时器收掉（1 秒 tick 早就跑过了）
+    r.popupLeftOnScreen = !!document.getElementById('leavePopup');
+    r.bodyAlive = !!(document.body && document.getElementById('__r'));
     r.errors = window.__pageErrors;
     document.getElementById('__r').textContent = JSON.stringify(r);
   }, 2300);
@@ -586,6 +594,12 @@ setTimeout(function () {
 const player = run(build('player.html', playerProbe, 9000), 9000, 'gansu-spcrm/videoPlayGJ');
 ok('页面无 JS 报错', player.errors.length === 0, player.errors.join(' | '));
 ok('window.onblur 已被清空', player.onblurIsNull === true);
+ok('已挂在页面上的「停止计时」提示被定时器自动收掉',
+  player.popupRendered === true && player.popupLeftOnScreen === false,
+  `渲染=${player.popupRendered} 残留=${player.popupLeftOnScreen}`);
+// 护栏：清理弹窗绝不能把 body 一起摘掉（那会让整页空白，比弹窗严重得多）
+ok('清理弹窗后文档主体仍在',
+  player.bodyAlive === true, String(player.bodyAlive));
 ok('派发 blur 后平台 handler 零次触发', player.afterDispatch === player.before,
   `${player.before} -> ${player.afterDispatch}`);
 ok('事后注册的 blur 监听同样被拦截', player.lateFired === 0, String(player.lateFired));
