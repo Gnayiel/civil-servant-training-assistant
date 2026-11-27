@@ -5,8 +5,18 @@
 <title>课程播放（离线 fixture）</title>
 <script>
   window.__blurCalls = 0;
-  function isLeaveOrEnter() { window.__blurCalls += 1; }
+  window.__alerts = [];      // 平台弹窗记录（Showbo.Msg.alert 的落点）
+  window.__paused = [];      // myJwPlayer.play 的调用记录
+  // 与真实播放页一致的完整行为：弹提示 + 2 秒后暂停
+  function isLeaveOrEnter() {
+    window.__blurCalls += 1;
+    if (window.Showbo) Showbo.Msg.alert('如有下列行为之一，视频将停止播放计时：3、试图打开多个播放页面同时学习。');
+    setTimeout(function () { if (window.myJwPlayer) myJwPlayer.play(false); }, 2000);
+  }
   window.onblur = isLeaveOrEnter;
+  window.__isLeaveOrEnter = isLeaveOrEnter;   // 给冒烟探针直接调用（模拟绕开事件拦截）
+  window.Showbo = { Msg: { alert: function (m) { window.__alerts.push(m); } } };
+  window.myJwPlayer = { play: function (x) { window.__paused.push(x); } };
 </script>
 </head>
 <body style="background:#333">

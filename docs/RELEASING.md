@@ -111,12 +111,12 @@ Host github.com
 
 | 入口 | 地址 | 特点 |
 | --- | --- | --- |
-| 油猴自动更新（发现新版本） | `@updateURL`：GitHub `releases/latest/download/...` | 随新 Release 立即改指向；只读版本号，不承载下载 |
-| 固定版本安装 / 重装 | `@downloadURL`：`fastly.jsdelivr.net/gh/<repo>@vx.y.z/...` | 钉死到 tag；国内可达，缓存稳定 |
+| 油猴自动更新 | `@updateURL`：`cdn.jsdelivr.net/gh/<repo>@main/...` | 分支缓存 **12 小时** |
+| 固定版本安装 | `fastly.jsdelivr.net/gh/<repo>@vx.y.z/...` | 钉死到 tag，不受分支缓存影响 |
 | 权威版本判定 | `raw.githubusercontent.com/<repo>/main/...` | 无长缓存，发版门禁用它判断 main 是否跟上 |
 | Release 附件 | Releases 页的 `.user.js` 与 `.sha256` | 离线安装与校验 |
 
-**为什么 `@updateURL` 不再用 jsDelivr**：分支指针 `@main` 实测不同边缘节点返回不同旧版本（12 小时缓存，且缓存键不含查询串，加 `?t=` 也绕不过），版本别名 `@latest` 滞后更多（7 天）；两者都做不了「发现新版本」。从 v1.3.10 起 `@updateURL` 改用 GitHub `releases/latest/download`，随新 Release 立即改指向，只有「读版本号」这一步访问 github.com；`@downloadURL` 仍钉当前 tag 走 jsDelivr，下载留在国内可达的 CDN。
+**为什么 `@updateURL` 用 `@main` 而不是 `@latest`**：jsDelivr 的分支缓存是 12 小时，版本别名（含 `latest`）是 7 天，精确 tag/commit 是永久。`@main` 已经是「能自动更新」里最快的通道。
 
 因此发布顺序必须是：先推 main（raw 跟上）→ 再推 tag（workflow 建 Release）→ latest 指向新 tag。镜像没刷新只会 `::warning::`，不卡发版；急着验证用 `@vx.y.z` 固定链接。
 

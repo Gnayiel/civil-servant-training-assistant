@@ -508,7 +508,15 @@ setTimeout(function () {
     window.dispatchEvent(new Event('blur'));
     r.probeOnBlocked = (probeHits === 0);
 
-    // 关掉开关后不���拦截，探针应收到
+    // 关掉开关之前先取快照：关闭后平台会恢复正常弹窗/暂停，那是预期行为，
+    // 不能混进「ON 阶段应当零弹窗」的统计里
+    r.leaveAlertOn = (window.__alerts || []).filter(function (m) {
+      return String(m).indexOf('视频将停止播放计时') >= 0;
+    }).length;
+    r.pausedOn = (window.__paused || []).slice();
+
+
+    // 关掉开关后不再拦截，探针应收到
     tg.click();
     probeHits = 0;
     window.dispatchEvent(new Event('blur'));
@@ -543,13 +551,39 @@ setTimeout(function () {
     r.mutedAfterOn = vid.muted;           // 应为 true
   }
 
-  r.errors = window.__pageErrors;
-  document.getElementById('__r').textContent = JSON.stringify(r);
+  // ---- 失焦三层防护（对应 v1.3.20）----
+  // 平台真实行为：window.onblur → Showbo.Msg.alert(…停止播放计时…) + 2 秒后 myJwPlayer.play(false)
+  r.leaveAlertShown = (window.__alerts || []).filter(function (m) {
+    return String(m).indexOf('视频将停止播放计时') >= 0;
+  }).length;
+  // 主动触发一条「非失焦」提示，验证拦截器只认那条文案、不误伤别的
+  if (window.Showbo) Showbo.Msg.alert('毕业条件如下: 1、必修课…');
+  r.otherAlertShown = (window.__alerts || []).filter(function (m) {
+    return String(m).indexOf('毕业条件') >= 0;
+  }).length;
+  r.pausedWithinWindow = (window.__paused || []).slice();
+
+  // ---- 最坏情况：事件层完全失效 ----
+  // 真实 Edge 上的表现就是如此（日志出现「意外暂停」说明 isLeaveOrEnter 确实跑了）。
+  // 直接调平台回调、绕开我们的 blur 拦截，验证结果层兜底独立生效。
+  window.__alerts.length = 0;
+  window.__paused.length = 0;
+  if (typeof window.__isLeaveOrEnter === 'function') window.__isLeaveOrEnter();
+  r.bypassAlertSuppressed = (window.__alerts.filter(function (m) {
+    return String(m).indexOf('视频将停止播放计时') >= 0;
+  }).length === 0);
+
+  // 平台在 2 秒后调 myJwPlayer.play(false)，等它跑完再收结果
+  setTimeout(function () {
+    r.pausedAfterBypass = (window.__paused || []).slice();
+    r.errors = window.__pageErrors;
+    document.getElementById('__r').textContent = JSON.stringify(r);
+  }, 2300);
 }, 2500);
 `;
 
 // 放在与真实地址相同的路径层级，让 isPlayerPage() 的路径判定真正被测到
-const player = run(build('player.html', playerProbe, 6000), 6000, 'gansu-spcrm/videoPlayGJ');
+const player = run(build('player.html', playerProbe, 9000), 9000, 'gansu-spcrm/videoPlayGJ');
 ok('页面无 JS 报错', player.errors.length === 0, player.errors.join(' | '));
 ok('window.onblur 已被清空', player.onblurIsNull === true);
 ok('派发 blur 后平台 handler 零次触发', player.afterDispatch === player.before,
@@ -561,6 +595,22 @@ ok('开关打开时拦截器生效（探针监听收不到 blur）', player.prob
 ok('关掉开关后拦截器放行（探针监听收到 blur）', player.probeOffPassed === true,
   String(player.probeOffPassed));
 ok('重新打开开关又恢复拦截', player.probeOnAgain === true);
+
+// 失焦三层防护：只拦「停止计时」那条提示，别误伤平台的其它提示
+ok('失焦提示被拦下（不再弹「停止播放计时」）',
+  player.leaveAlertOn === 0, String(player.leaveAlertOn));
+ok('平台的其它提示未被误伤（毕业条件仍显示）',
+  player.otherAlertShown === 1, String(player.otherAlertShown));
+// 平台在失焦 2 秒后调 myJwPlayer.play(false)；该窗口内必须被忽略
+ok('失焦引起的 play(false) 被忽略',
+  JSON.stringify(player.pausedOn || []) === '[]',
+  JSON.stringify(player.pausedOn));
+// 这两条守「结果层兜底」：不依赖事件拦截是否生效
+ok('事件拦截被绕过时，提示仍被吞掉',
+  player.bypassAlertSuppressed === true, String(player.bypassAlertSuppressed));
+ok('事件拦截被绕过时，2 秒后的暂停仍被忽略',
+  JSON.stringify(player.pausedAfterBypass || []) === '[]',
+  JSON.stringify(player.pausedAfterBypass));
 ok('收起态标题排成一行（不被窄条挤断）',
   exam.foldTitle && exam.foldTitle.lines === 1 && exam.foldTitle.whiteSpace === 'nowrap',
   JSON.stringify(exam.foldTitle));

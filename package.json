@@ -1,14 +1,14 @@
 {
   "name": "civil-servant-training-assistant",
-  "version": "1.3.19",
+  "version": "1.3.20",
   "private": true,
   "description": "公务员网络培训平台通用 Tampermonkey 用户脚本：自动答题、解除播放失焦暂停、本地题库，内置甘肃省适配",
   "license": "MIT",
   "engines": {
     "node": ">=22"
   },
-  "//sizeBudgetKB": "单文件脚本的体积上限。拦住「无意间塞进大段内联数据」，不是越小越好。selftest 与 release 都读这里，避免两份数字漂移。",
-  "sizeBudgetKB": 270,
+  "//sizeBudgetKB": "单文件脚本的体积上限。拦住「无意间塞进大段内联数据」，不是越小越好。selftest / release / release.yml 都读这里，避免数字漂移。270->275 是为 v1.3.20 的失焦防护三层兜底（约 5KB 代码+说明）让位。",
+  "sizeBudgetKB": 275,
   "scripts": {
     "test": "node tests/selftest.mjs && node tools/check-data.mjs && node tests/merge-smoke.mjs",
     "check": "node tools/check-syntax.mjs && node tools/check-docs.mjs && node tests/selftest.mjs && node tools/check-data.mjs && node tests/merge-smoke.mjs && node tools/check-workflows.mjs",

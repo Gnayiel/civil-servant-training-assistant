@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.3.19
+// @version      1.3.20
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
 // @match        https://gwypx.gsdj.gov.cn/*
 // @match        http://gwypx.gsdj.gov.cn/*
-// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@v1.3.19/civil-servant-training-assistant.user.js
+// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@v1.3.20/civil-servant-training-assistant.user.js
 // @updateURL    https://github.com/Gnayiel/civil-servant-training-assistant/releases/latest/download/civil-servant-training-assistant.user.js
 // @run-at       document-idle
 // @grant        GM_setValue
@@ -33,7 +33,7 @@
 
   // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
   // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.19';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.20';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';
@@ -2325,6 +2325,127 @@
    * 本模块只解除失焦暂停，让视频按原速继续真实播放计时，
    * 不修改上报的 Location / Sessiontime，不伪造学时。
    */
+  /**
+   * 平台的「观看限制」实现（播放页源码）：
+   *   isLeaveOrEnter(){ Showbo.Msg.alert('…视频将停止播放计时…'); setTimeout(()=>myJwPlayer.play(false),2000) }
+   *   window.onblur = isLeaveOrEnter;
+   *
+   * 所以「多开检测」并不存在，就是**窗口失焦**这一个事件：切标签页、点其它窗口、
+   * 点桌面都会触发。Firefox 切标签页不触发 window blur，那边开六个没事；
+   * Chromium 系（Edge/Chrome）切标签页会触发，于是第二页一开就弹。
+   *
+   * 只有「清 onblur + 捕获阶段 stopImmediatePropagation」不够稳：播放器初始化、
+   * 标签页被挂起后重载等时序里页面会重新赋值 onblur，而事件拦截依赖监听器顺序。
+   * 因此再在**结果层**兜两道（与事件顺序无关）：
+   *   1. 吞掉「视频将停止播放计时」提示 —— 按文案精确匹配，「毕业条件」那条照常显示；
+   *   2. 失焦后 3 秒内的 myJwPlayer.play(false) 忽略 —— 平台正是失焦 2 秒后调它暂停。
+   */
+
+  /**
+   * 压制页面的 window.onblur 回调。
+   *
+   * **不能用 Object.defineProperty 覆盖 onblur**（踩过的坑）：它是 IDL 事件属性，
+   * 浏览器派发时用内部槽，定义一个同名 JS 属性只遮住「读」、遮不住内部槽，
+   * 实测反而让原本清掉的回调又跑了（派发 blur 后 handler 从 0 次变 1 次）。
+   * 正确做法是给 `window.onblur` 赋 null 清空内部槽，并保存原回调以便开关可逆。
+   * 页面可能重新赋值，故用低频定时器持续压制（仅开关打开时）。
+   */
+  let savedOnblur = null;
+  let blurSuppressTimer = null;
+
+  function suppressPageOnblur() {
+    if (!CONFIG.unlockBlur) return;
+    const cur = window.onblur;
+    if (typeof cur === 'function') savedOnblur = cur;   // 记住平台最新挂上的那个
+    if (cur !== null) {
+      try { window.onblur = null; } catch (e) { /* 忽略 */ }
+    }
+  }
+
+  function startOnblurSuppression() {
+    if (blurSuppressTimer) return;
+    suppressPageOnblur();
+    // 1 秒一次足够：平台的注册时机都在页面初始化阶段，远快于这个粒度
+    blurSuppressTimer = setInterval(suppressPageOnblur, 1000);
+  }
+
+  function stopOnblurSuppression() {
+    if (blurSuppressTimer) {
+      clearInterval(blurSuppressTimer);
+      blurSuppressTimer = null;
+    }
+    // 把平台原来的回调还回去；没有就保持 null（与页面初始状态一致时无副作用）
+    try { window.onblur = savedOnblur; } catch (e) { /* 忽略 */ }
+  }
+
+  /** 按当前开关状态开/关 onblur 压制 */
+  function syncOnblurSuppression() {
+    if (CONFIG.unlockBlur) startOnblurSuppression();
+    else stopOnblurSuppression();
+  }
+
+  // 最近一次失焦的时刻，用来界定「这次暂停是不是失焦引起的」
+  let lastFocusLossAt = 0;
+  function noteFocusLoss() {
+    lastFocusLossAt = Date.now();
+  }
+
+  /** 等某个全局对象出现（Showbo / myJwPlayer 常比脚本晚加载），最多 20 秒 */
+  function waitFor(pick, run) {
+    if (pick()) { run(pick()); return; }
+    let tries = 0;
+    const timer = setInterval(() => {
+      const got = pick();
+      if (got) { clearInterval(timer); run(got); return; }
+      if (++tries > 40) clearInterval(timer);
+    }, 500);
+  }
+
+  /** 吞掉「视频将停止播放计时」那条提示；其它提示（如「毕业条件」）一律放行 */
+  let leaveAlertPatched = false;
+  function suppressLeaveAlert() {
+    if (leaveAlertPatched) return;
+    waitFor(() => (window.Showbo && window.Showbo.Msg
+      && typeof window.Showbo.Msg.alert === 'function' ? window.Showbo.Msg : null), (Msg) => {
+      if (leaveAlertPatched) return;
+      leaveAlertPatched = true;
+      const rawAlert = Msg.alert.bind(Msg);
+      Msg.alert = function (msg) {
+        const text = String(msg == null ? '' : msg);
+        if (CONFIG.unlockBlur && /视频将停止播放计时/.test(text)) {
+          // 这条提示是 isLeaveOrEnter 的第一步，用它当「刚刚失焦」的信号：
+          // 即使 blur 事件没送到我们的监听器（真实 Edge 上就是这样），
+          // 后面的 play(false) 拦截依然有依据。
+          noteFocusLoss();
+          return undefined;
+        }
+        return rawAlert(msg);
+      };
+    });
+  }
+
+  /**
+   * 失焦后 3 秒内的 myJwPlayer.play(false) 不执行。
+   * 平台固定「失焦 → 等 2 秒 → play(false)」，这个窗口能精确覆盖它，
+   * 又不会误伤正常结束时的停止（那时离上次失焦早已超过 3 秒）。
+   */
+  let jwPatched = false;
+  function ignoreLeavePause() {
+    if (jwPatched) return;
+    waitFor(() => (window.myJwPlayer && typeof window.myJwPlayer.play === 'function'
+      ? window.myJwPlayer : null), (jw) => {
+      if (jwPatched) return;
+      jwPatched = true;
+      const rawPlay = jw.play.bind(jw);
+      jw.play = function (arg) {
+        if (CONFIG.unlockBlur && arg === false && Date.now() - lastFocusLossAt < 3000) {
+          return undefined;
+        }
+        return rawPlay(arg);
+      };
+    });
+  }
+
   const playerGuard = {
     installed: false,
     pausedByUs: 0,
@@ -2345,21 +2466,28 @@
       this.installed = true;
 
       if (CONFIG.unlockBlur) {
-        // 直接清空页面在 head 里注册的 onblur
-        try {
-          window.onblur = null;
-        } catch (e) { /* 忽略 */ }
+        // 顺序很重要：**先钉死、再清空**。
+        // 先清空的话，"原始描述符"就变成 {value: null}，等用户关掉开关想恢复时
+        // 只能还原成 null —— 平台回调永远回不来，开关变成单向的。
+        // 钉死后 getter 本来就读到 null，那句显式清空只是兜底（万一宿主不让改属性）。
+        //
+        // 钉死的理由：播放器初始化、标签页被浏览器挂起后重新载入这类时序里，
+        // 页面会重新执行 window.onblur = isLeaveOrEnter。只清一次挡不住后来者。
+        syncOnblurSuppression();
         // 拦截后续通过 addEventListener 注册的 blur（捕获阶段先吃掉）。
         // 必须每次检查 CONFIG.unlockBlur：监听器装上就拿不下来，
         // 不在里面判断的话，用户关掉开关会「看起来关了实际还在拦」。
         window.addEventListener('blur', (ev) => {
           if (!CONFIG.unlockBlur) return;
+          noteFocusLoss();
           ev.stopImmediatePropagation();
         }, true);
         document.addEventListener('visibilitychange', (ev) => {
           if (!CONFIG.unlockBlur) return;
-          if (document.hidden) ev.stopImmediatePropagation();
+          if (document.hidden) { noteFocusLoss(); ev.stopImmediatePropagation(); }
         }, true);
+        suppressLeaveAlert();
+        ignoreLeavePause();
         log('已解除失焦暂停（窗口切换不再中断播放）', 'ok');
       }
 
@@ -2383,6 +2511,13 @@
      */
     applyLive() {
       if (!this.installed) return;
+      // 开关拨动时同步压制：关掉就该把平台的原行为还回去
+      syncOnblurSuppression();
+      if (CONFIG.unlockBlur) {
+        // Showbo / myJwPlayer 可能晚加载，applyLive 时再补一次钩子
+        suppressLeaveAlert();
+        ignoreLeavePause();
+      }
       if (CONFIG.keepPlaying) this.watchVideo();
       const v = document.querySelector('video');
       if (!v) return;
