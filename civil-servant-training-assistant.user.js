@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         公务员网络培训助手
 // @namespace    https://github.com/Gnayiel/civil-servant-training-assistant
-// @version      1.3.21
+// @version      1.3.22
 // @description  公务员网络培训平台通用助手：自动答题、解除播放失焦暂停、本地题库。与「法宣在线助手」同一家族，界面与交互保持一致。
 // @author       Gnayiel
 // @license      MIT
 // @match        https://gwypx.gsdj.gov.cn/*
 // @match        http://gwypx.gsdj.gov.cn/*
-// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@v1.3.21/civil-servant-training-assistant.user.js
+// @downloadURL  https://fastly.jsdelivr.net/gh/Gnayiel/civil-servant-training-assistant@v1.3.22/civil-servant-training-assistant.user.js
 // @updateURL    https://github.com/Gnayiel/civil-servant-training-assistant/releases/latest/download/civil-servant-training-assistant.user.js
 // @run-at       document-idle
 // @grant        GM_setValue
@@ -33,7 +33,7 @@
 
   // 油猴/暴力猴都会提供 GM_info.script.version；兜底值只在没有 GM_info 的环境用到，
   // 但它是第二个版本副本，必须在发版时同步——自检会断言它与 @version 相等。
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.21';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '1.3.22';
   const BOOT_AT = Date.now();
   const TITLE = '公务员网络培训助手';
   const TAG = 'CSTA';
@@ -2338,7 +2338,10 @@
    * 标签页被挂起后重载等时序里页面会重新赋值 onblur，而事件拦截依赖监听器顺序。
    * 因此再在**结果层**兜两道（与事件顺序无关）：
    *   1. 吞掉「视频将停止播放计时」提示 —— 按文案精确匹配，「毕业条件」那条照常显示；
-   *   2. 失焦后 3 秒内的 myJwPlayer.play(false) 忽略 —— 平台正是失焦 2 秒后调它暂停。
+   *
+   * 注意：**不去拦 myJwPlayer.play(false)**。v1.3.20 曾这么做过，结果吞掉了播放器
+   * 自己的状态切换，画面与内部状态不同步，用户点播放没反应（实测「卡住」）。
+   * 暂停本身交给既有的「意外暂停自动恢复」处理，安全得多。
    */
 
   /**
@@ -2367,15 +2370,15 @@
     suppressPageOnblur();
     // 1 秒一次足够：平台的注册时机都在页面初始化阶段，远快于这个粒度。
     // 同一个 tick 里顺带做两件相关的事：
-    //   · keepPatched：页面整块替换 Showbo.Msg / myJwPlayer 时把桩补回去；
+    //   · keepPatched：页面整块替换 Showbo.Msg 时把桩补回去；
     //   · dismissExistingLeavePopup：收掉脚本加载前就已弹出的那条提示。
-    // 弹窗只可能在页面刚打开这段时间出现，所以只在开局 20 秒内扫；
+    // 弹窗只可能在页面刚打开这段时间出现，所以只在开局 10 秒内扫；
     // 之后完全停下，不长期占用 CPU。
     const startedAt = Date.now();
     blurSuppressTimer = setInterval(() => {
       suppressPageOnblur();
       try { keepPatched(); } catch (e) { /* 忽略 */ }
-      if (Date.now() - startedAt < 20000) {
+      if (Date.now() - startedAt < 10000) {
         try { dismissExistingLeavePopup(); } catch (e) { /* 忽略 */ }
       }
     }, 1000);
@@ -2402,7 +2405,7 @@
     lastFocusLossAt = Date.now();
   }
 
-  /** 等某个全局对象出现（Showbo / myJwPlayer 常比脚本晚加载），最多 20 秒 */
+  /** 等某个全局对象出现（Showbo 常比脚本晚加载），最多 20 秒 */
   function waitFor(pick, run) {
     if (pick()) { run(pick()); return; }
     let tries = 0;
@@ -2414,7 +2417,7 @@
   }
 
   /**
-   * 页面可能在脚本之后整块替换 Showbo.Msg / myJwPlayer（videoPlayGJ.js 在 body 末尾加载），
+   * 页面可能在脚本之后整块替换 Showbo.Msg（videoPlayGJ.js 在 body 末尾加载），
    * 那样打过的桩会被丢掉。每个 tick 检查一次，被换掉就重打；开销是一次属性比较。
    */
   function keepPatched() {
@@ -2423,12 +2426,7 @@
       && window.Showbo.Msg.alert !== patchedAlert) {
       leaveAlertPatched = false;
     }
-    if (jwPatched && window.myJwPlayer && typeof window.myJwPlayer.play === 'function'
-      && window.myJwPlayer.play !== patchedPlay) {
-      jwPatched = false;
-    }
     if (!leaveAlertPatched) suppressLeaveAlert();
-    if (!jwPatched) ignoreLeavePause();
   }
 
   /**
@@ -2442,48 +2440,51 @@
   const LEAVE_PHRASE = '视频将停止播放计时';
   function dismissExistingLeavePopup() {
     if (!CONFIG.unlockBlur) return false;
-    let boxes;
+    if (!document.body) return false;
+
+    // 用 TreeWalker 扫文本节点（O(n) 一次），不要 `querySelectorAll` 后逐个取 textContent ——
+    // 那是 O(n²)，在播放页这种 DOM 上每秒跑一次会造成明显卡顿。
+    let hitEl = null;
     try {
-      // 只找真正承载可见内容的容器。
-      // **不能带 `body > *`**：那会把 <script> 也选进来，而弹窗函数的源码里就含这句文案，
-      // 于是最先命中的是脚本标签、往下走找不到确认按钮，清理永远失败（实测踩过）。
-      boxes = Array.from(document.querySelectorAll('div, section, li, td, p')).filter((el) => {
-        if (/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/i.test(el.tagName)) return false;
-        const t = el.textContent || '';
-        if (t.indexOf(LEAVE_PHRASE) < 0) return false;
-        // 取最内层：子元素里还有同样文案就继续往下，避免锁到外层大容器
-        return !Array.from(el.children).some((c) => (c.textContent || '').indexOf(LEAVE_PHRASE) >= 0);
-      });
-    } catch (e) { return false; }
-    for (const el of boxes) {
-      let box = el;
-      for (let up = 0; up < 6 && box; up++) {
-        let btn = null;
-        try {
-          btn = Array.from(box.querySelectorAll('button, a, input[type="button"], [role="button"]'))
-            .find((b) => /^(确认|确定|知道了|关闭|OK)$/i.test((b.textContent || b.value || '').trim()));
-        } catch (e) { /* 忽略 */ }
-        // 安全护栏：绝不能把 body/html 当成「弹层」摘掉。
-        // 一旦发生，整页会被清空 —— 比弹窗本身严重得多。
-        if (box === document.body || box === document.documentElement || box === document) {
-          return false;
-        }
-        if (btn) {
-          const container = box;
-          try { btn.click(); } catch (e) { /* 忽略 */ }
-          // 点完复查：有些实现把关闭逻辑绑在别处，点按钮不一定真的移除，
-          // 那就直接摘掉这个弹层（文案是平台独有那句，误删风险很低）。
-          const isRoot = container === document.body || container === document.documentElement
-            || container === document;
-          if (!isRoot && container.isConnected
-            && (container.textContent || '').indexOf(LEAVE_PHRASE) >= 0) {
-            try { container.remove(); } catch (e) { /* 忽略 */ }
-          }
-          log('已关闭脚本加载前弹出的「切窗口停止计时」提示', 'ok');
-          return true;
-        }
-        box = box.parentElement;
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+      let node;
+      while ((node = walker.nextNode())) {
+        const v = node.nodeValue;
+        if (!v || v.indexOf(LEAVE_PHRASE) < 0) continue;
+        const owner = node.parentElement;
+        // 必须跳过脚本/样式里的同名文案：弹窗函数的源码本身就含这句话，
+        // 一旦命中 <script> 就永远找不到按钮（这个坑在 v1.3.21 踩过一次）。
+        if (!owner || owner.closest('script, style, noscript, template')) continue;
+        hitEl = owner;
+        break;
       }
+    } catch (e) { return false; }
+    if (!hitEl) return false;
+
+    // 从命中处向上找带「确认」按钮的容器，最多 6 层
+    let box = hitEl;
+    for (let up = 0; up < 6 && box; up++) {
+      if (box === document.body || box === document.documentElement) return false;
+      let btn = null;
+      try {
+        btn = Array.from(box.querySelectorAll('button, a, input[type="button"], [role="button"]'))
+          .find((b) => /^(确认|确定|知道了|关闭|OK)$/i.test((b.textContent || b.value || '').trim()));
+      } catch (e) { /* 忽略 */ }
+      if (btn) {
+        const container = box;
+        // 体积上限：真正的弹层文字很少。若这个容器装着整页内容（长文本），
+        // 说明找错了层，宁可不删 —— 摘掉一个包住播放器的 div 会让整页废掉。
+        const txtLen = (container.textContent || '').trim().length;
+        if (txtLen > 500) return false;
+        try { btn.click(); } catch (e) { /* 忽略 */ }
+        // 点完复查：有些实现关闭逻辑绑在别处，点按钮不一定真的移除
+        if (container.isConnected && (container.textContent || '').indexOf(LEAVE_PHRASE) >= 0) {
+          try { container.remove(); } catch (e) { /* 忽略 */ }
+        }
+        log('已关闭脚本加载前弹出的「切窗口停止计时」提示', 'ok');
+        return true;
+      }
+      box = box.parentElement;
     }
     return false;
   }
@@ -2510,27 +2511,6 @@
         return rawAlert(msg);
       };
       Msg.alert = patchedAlert;
-    });
-  }
-
-  /** 失焦后 3 秒内的 myJwPlayer.play(false) 不执行。
-   *  平台固定「失焦 → 等 2 秒 → play(false)」；窗口外（如正常结束）照常执行。 */
-  let jwPatched = false;
-  let patchedPlay = null;       // 同上
-  function ignoreLeavePause() {
-    if (jwPatched) return;
-    waitFor(() => (window.myJwPlayer && typeof window.myJwPlayer.play === 'function'
-      ? window.myJwPlayer : null), (jw) => {
-      if (jwPatched) return;
-      jwPatched = true;
-      const rawPlay = jw.play.bind(jw);
-      patchedPlay = function (arg) {
-        if (CONFIG.unlockBlur && arg === false && Date.now() - lastFocusLossAt < 3000) {
-          return undefined;
-        }
-        return rawPlay(arg);
-      };
-      jw.play = patchedPlay;
     });
   }
 
@@ -2570,7 +2550,6 @@
           if (document.hidden) { noteFocusLoss(); ev.stopImmediatePropagation(); }
         }, true);
         suppressLeaveAlert();
-        ignoreLeavePause();
         // 先收掉可能已经挂在屏幕上的那条提示（加载期失焦会提前弹）
         try { dismissExistingLeavePopup(); } catch (e) { /* 忽略 */ }
         log('已解除失焦暂停（窗口切换不再中断播放）', 'ok');
@@ -2599,9 +2578,8 @@
       // 开关拨动时同步压制：关掉就该把平台的原行为还回去
       syncOnblurSuppression();
       if (CONFIG.unlockBlur) {
-        // Showbo / myJwPlayer 可能晚加载，applyLive 时再补一次钩子
+        // Showbo 可能晚加载，applyLive 时再补一次钩子
         suppressLeaveAlert();
-        ignoreLeavePause();
       }
       if (CONFIG.keepPlaying) this.watchVideo();
       const v = document.querySelector('video');
@@ -4149,8 +4127,6 @@
         showboPresent: !!(window.Showbo && window.Showbo.Msg),
         showboPatched: !!(window.Showbo && window.Showbo.Msg
           && window.Showbo.Msg.alert === patchedAlert),
-        jwPresent: !!(window.myJwPlayer && typeof window.myJwPlayer.play === 'function'),
-        jwPatched: !!(window.myJwPlayer && window.myJwPlayer.play === patchedPlay),
         leavePopupOnScreen: (function () {
           try {
             return document.body.textContent.indexOf(LEAVE_PHRASE) >= 0;

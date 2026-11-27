@@ -619,12 +619,11 @@ ok('平台的其它提示未被误伤（毕业条件仍显示）',
 ok('失焦引起的 play(false) 被忽略',
   JSON.stringify(player.pausedOn || []) === '[]',
   JSON.stringify(player.pausedOn));
-// 这两条守「结果层兜底」：不依赖事件拦截是否生效
+// 结果层兜底：不依赖事件拦截是否生效。
+// 注意「暂停拦截」这一层已在 v1.3.22 移除 —— 它会吞掉平台的 play(false)，
+// 使播放器内部状态与画面不同步（用户反馈「卡住」），而弹窗问题不需要它。
 ok('事件拦截被绕过时，提示仍被吞掉',
   player.bypassAlertSuppressed === true, String(player.bypassAlertSuppressed));
-ok('事件拦截被绕过时，2 秒后的暂停仍被忽略',
-  JSON.stringify(player.pausedAfterBypass || []) === '[]',
-  JSON.stringify(player.pausedAfterBypass));
 ok('收起态标题排成一行（不被窄条挤断）',
   exam.foldTitle && exam.foldTitle.lines === 1 && exam.foldTitle.whiteSpace === 'nowrap',
   JSON.stringify(exam.foldTitle));
